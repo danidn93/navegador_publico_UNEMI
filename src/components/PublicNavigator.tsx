@@ -20,7 +20,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import { Search, Send } from "lucide-react";
+import { Search, Send, ListOrdered, PanelTopOpen, X } from "lucide-react"; // NUEVO iconos
 
 // Fix iconos Leaflet
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -63,7 +63,7 @@ type Room = {
   capacity: number | null;
   equipment?: string[] | null;
   keywords?: string[] | null;
-  actividades?: string[] | null; // NUEVO para oficinas
+  actividades?: string[] | null;
   floor?: { id: string; floor_number: number };
 };
 
@@ -98,7 +98,6 @@ const CATEGORY_WORDS = [
   "oficina",
   "facultad",
   "departamento",
-  // tipos y palabra genérica para landmarks
   "referencia",
   "plazoleta",
   "bar",
@@ -214,7 +213,7 @@ export default function PublicNavigator() {
   const [query, setQuery] = useState("");
   const [userLoc, setUserLoc] = useState<{ lat: number; lng: number } | null>(null);
   const [gpsDenied, setGpsDenied] = useState(false);
-  const [gpsFollow, setGpsFollow] = useState(true); // mascota sigue el GPS
+  const [gpsFollow, setGpsFollow] = useState(true);
 
   const [isAdmin, setIsAdmin] = useState(false);
   useEffect(() => {
@@ -231,7 +230,7 @@ export default function PublicNavigator() {
 
   const [footways, setFootways] = useState<Footway[]>([]);
   const [entrances, setEntrances] = useState<Entrance[]>([]);
-  const [landmarks, setLandmarks] = useState<Landmark[]>([]); // NUEVO
+  const [landmarks, setLandmarks] = useState<Landmark[]>([]);
 
   const graphRef = useRef<Map<NodeId, Node> | null>(null);
   const segmentsRef = useRef<Segment[] | null>(null);
@@ -244,10 +243,8 @@ export default function PublicNavigator() {
   const userMarkerRef = useRef<L.Marker | null>(null);
   const buildingNoteRef = useRef<L.Tooltip | null>(null);
 
-  // NUEVO: capa actual de ruta propia (polilínea campus / fallback)
   const routeLayerRef = useRef<L.Layer | null>(null);
 
-  // Mascota/GPS
   const walkerRef = useRef<L.Marker | null>(null);
   const walkerIcon = L.icon({
     iconUrl: "/mascota-unemi.png",
@@ -259,6 +256,10 @@ export default function PublicNavigator() {
   // Guía
   const [steps, setSteps] = useState<string[]>([]);
   const [ttsPlaying, setTtsPlaying] = useState(false);
+
+  // NUEVO: estado de navegación responsiva
+  const [routeActive, setRouteActive] = useState(false); // hay una ruta dibujada
+  const [stepsOpen, setStepsOpen] = useState(false);     // panel de pasos expandido
 
   // Chat
   const [chatOpen, setChatOpen] = useState(false);
@@ -275,7 +276,6 @@ export default function PublicNavigator() {
     }
   }, [chatOpen]);
 
-  // Atajo para abrir chat
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "/") { e.preventDefault(); setChatOpen(true); }
@@ -284,7 +284,7 @@ export default function PublicNavigator() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // ====== INIT: GPS + datos (FILTRADOS por estado)
+  // ====== INIT: GPS + datos
   useEffect(() => {
     if ("geolocation" in navigator) {
       navigator.geolocation.watchPosition(
@@ -373,11 +373,10 @@ export default function PublicNavigator() {
 
   useEffect(() => { addBuildingMarkers(); }, [buildings]); // eslint-disable-line
 
-  // Actualiza marcador de usuario y mascota siguiendo GPS
+  // marcador de usuario y mascota
   useEffect(() => {
     if (!mapRef.current || !userLoc) return;
 
-    // marcador de usuario
     if (!userMarkerRef.current) {
       userMarkerRef.current = L.marker([userLoc.lat, userLoc.lng], { title: "Tu ubicación" })
         .addTo(mapRef.current)
@@ -386,7 +385,6 @@ export default function PublicNavigator() {
       userMarkerRef.current.setLatLng([userLoc.lat, userLoc.lng]);
     }
 
-    // mascota sigue el GPS
     if (gpsFollow) {
       if (!walkerRef.current) {
         walkerRef.current = L.marker([userLoc.lat, userLoc.lng], {
@@ -424,7 +422,7 @@ export default function PublicNavigator() {
     });
   };
 
-  // ====== Búsqueda (edificio/room/landmark + actividades)
+  // ====== Búsqueda
   const parseIntent = (raw: string) => {
     const s = raw.trim().toLowerCase();
     const re = /c[oó]mo\s+llego\s+(?:al|a\s+la)\s+(bloque|aula|laboratorio|taller|oficina|facultad|departamento|referencia|plazoleta|bar|corredor)\s+(.+)/i;
@@ -453,7 +451,6 @@ export default function PublicNavigator() {
       }
     }
 
-    // rooms (incluye actividades)
     const r = await findRoom(term, category && !["bloque","referencia","plazoleta","bar","corredor"].includes(category) ? category : null);
     if (r) {
       await focusRoom(r);
@@ -461,7 +458,6 @@ export default function PublicNavigator() {
       return;
     }
 
-    // landmarks
     const lm = await findLandmark(term, category);
     if (lm) {
       await focusLandmark(lm);
@@ -495,7 +491,6 @@ export default function PublicNavigator() {
       `room_number.ilike.%${term}%`,
     ];
 
-    // keywords/equipment/actividades
     if (tokens.length > 1) {
       orParts.push(`keywords.ov.${kwArray}`);
       orParts.push(`equipment.ov.${kwArray}`);
@@ -595,7 +590,7 @@ export default function PublicNavigator() {
     } catch (e) { console.error(e); toast.error("Error cargando pisos/rooms"); }
   };
 
-  // ====== Grafo Footways (ya filtrado por ABIERTO)
+  // ====== Grafo Footways
   const buildGraphAndSegments = (foot: Footway[]) => {
     const G = new Map<NodeId, Node>();
     const segs: Segment[] = [];
@@ -694,7 +689,6 @@ export default function PublicNavigator() {
     return false;
   };
 
-  // ====== Entradas: escoger a cuál ir
   const bestEntranceForBuilding = (buildingId: string, fromLL: L.LatLng): L.LatLng => {
     const list = entrances.filter((e) => e.building_id === buildingId);
     if (list.length === 0) {
@@ -712,7 +706,6 @@ export default function PublicNavigator() {
     return L.latLng(lat, lng);
   };
 
-  // ====== Limpieza de ruta previa (NUEVO)
   const clearRouteLayers = () => {
     if (!mapRef.current) return;
     if (routingRef.current) {
@@ -728,10 +721,10 @@ export default function PublicNavigator() {
       buildingNoteRef.current = null;
     }
     setSteps([]); // limpia guía
-    // no tocamos los marcadores de usuario/mascota
+    setRouteActive(false);  // NUEVO: salir del modo navegación
+    setStepsOpen(false);    // NUEVO: contraer panel de pasos
   };
 
-  // ====== Focus room → ruta a ENTRADA
   const focusRoom = async (room: Room) => {
     try {
       const { data: floor, error: fErr } = await supabase
@@ -762,7 +755,6 @@ export default function PublicNavigator() {
     } catch (e) { console.error(e); toast.error("No se pudo focalizar el espacio"); }
   };
 
-  // ====== Focus landmark → ruta al punto del landmark
   const focusLandmark = async (lm: Landmark) => {
     if (!mapRef.current) return;
     const [lng, lat] = lm.location.coordinates;
@@ -780,7 +772,6 @@ export default function PublicNavigator() {
     L.popup().setLatLng(ll).setContent(`<b>${lm.name ?? lm.type}</b>`).openOn(mapRef.current);
   };
 
-  // ====== Routing
   const ensureRoutingLib = async () => {
     if ((L as any).Routing?.control) return;
     await import("leaflet-routing-machine");
@@ -789,15 +780,15 @@ export default function PublicNavigator() {
   const drawFootRoute = async (fromLL: L.LatLng, toLL: L.LatLng) => {
     if (!mapRef.current) return;
 
-    // Limpia cualquier ruta previa ANTES de trazar una nueva
-    clearRouteLayers();
+    clearRouteLayers(); // limpiar antes
 
     const ready = await waitForGraphReady();
+    setRouteActive(true);   // NUEVO: entrar a modo navegación
+    setStepsOpen(false);    // NUEVO: pasos ocultos por defecto
 
     try {
       await ensureRoutingLib();
 
-      // Prioriza red interna (solo ABIERTO)
       if (ready) {
         const campusPath = routeOnCampus(fromLL, toLL);
         if (campusPath && campusPath.length >= 2) {
@@ -806,12 +797,11 @@ export default function PublicNavigator() {
           mapRef.current!.fitBounds(layer.getBounds(), { padding: [60, 60] });
           const insts = buildTurnByTurn(campusPath, toLL);
           setSteps(insts);
-          speakReset(); speakAll(insts);
+          speakReset(); // no reproducir automáticamente para no “tapar” el mapa
           return;
         }
       }
 
-      // Fallback OSRM (externo)
       const plan = (L as any).Routing.plan([fromLL, toLL], {
         draggableWaypoints: false, addWaypoints: false,
         createMarker: (i: number, wp: any) =>
@@ -832,7 +822,8 @@ export default function PublicNavigator() {
         const route = e.routes?.[0];
         const coords: L.LatLng[] = (route?.coordinates || []).map((c: any) => L.latLng(c.lat, c.lng));
         const insts = route?.instructions?.map((i: any) => i.text) ?? buildTurnByTurn(coords, toLL);
-        setSteps(insts); speakReset(); speakAll(insts);
+        setSteps(insts);
+        speakReset(); // NUEVO: no auto TTS
       });
 
       ctrl.on("routingerror", () => {
@@ -840,7 +831,8 @@ export default function PublicNavigator() {
         drawFallbackLine(fromLL, toLL);
         const dist = Math.round(haversine(fromLL, toLL));
         const insts = [`Camina en línea recta hacia el destino (≈ ${dist} m).`];
-        setSteps(insts); speakReset(); speakAll(insts);
+        setSteps(insts);
+        speakReset();
       });
     } catch (e) {
       console.error(e);
@@ -848,13 +840,13 @@ export default function PublicNavigator() {
       drawFallbackLine(fromLL, toLL);
       const dist = Math.round(haversine(fromLL, toLL));
       const insts = [`Camina en línea recta hacia el destino (≈ ${dist} m).`];
-      setSteps(insts); speakReset(); speakAll(insts);
+      setSteps(insts);
+      speakReset();
     }
   };
 
   const drawFallbackLine = (from: L.LatLng, to: L.LatLng) => {
     if (!mapRef.current) return;
-    // por si acaso, limpia cualquier resto
     if (routeLayerRef.current) { mapRef.current.removeLayer(routeLayerRef.current); routeLayerRef.current = null; }
     const layer = L.polyline([from, to], { weight: 5, dashArray: "6 8", opacity: 0.9 });
     routeLayerRef.current = layer.addTo(mapRef.current);
@@ -911,69 +903,116 @@ export default function PublicNavigator() {
     return Array.from(map.entries()).sort((a, b) => a[0] - b[0]);
   }, [buildingRooms]);
 
+  // NUEVO: helper para reiniciar UI/búsqueda
+  const resetUI = () => {
+    clearRouteLayers();
+    setSelectedRoom(null);
+    setSelectedBuilding(null);
+    setQuery("");
+    setChatOpen(false);
+  };
+
   // ================= UI =================
   return (
     <div className="relative h-screen w-full bg-background">
-      {/* Header */}
-      <div className="absolute top-0 left-0 right-0 z-20 bg-primary text-primary-foreground">
-        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
-          <div className="font-bold">UNEMI Campus Navigator — Público</div>
-          {userLoc ? (
-            <Badge variant="secondary">GPS activo</Badge>
-          ) : gpsDenied ? (
-            <Badge variant="destructive">GPS no disponible</Badge>
+      {/* Header (NavBar): compacto cuando hay ruta */}
+      <div className={`absolute top-0 left-0 right-0 z-20 bg-primary text-primary-foreground transition-all ${routeActive ? "py-2" : "py-3"}`}>
+        <div className="max-w-6xl mx-auto px-4 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="font-bold">UNEMI Campus Navigator — Público</div>
+            {userLoc ? (
+              <Badge variant="secondary">GPS activo</Badge>
+            ) : gpsDenied ? (
+              <Badge variant="destructive">GPS no disponible</Badge>
+            ) : (
+              <Badge>Obteniendo GPS…</Badge>
+            )}
+          </div>
+
+          {/* NUEVO: acciones de navegación en NavBar cuando hay ruta */}
+          {routeActive ? (
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="secondary" onClick={() => setStepsOpen((v) => !v)}>
+                <ListOrdered className="w-4 h-4 mr-2" />
+                {stepsOpen ? "Ocultar pasos" : "Ver pasos"}
+              </Button>
+              <Button size="sm" variant={gpsFollow ? "secondary" : "outline"} onClick={() => {
+                const next = !gpsFollow;
+                setGpsFollow(next);
+                toast(next ? "La mascota seguirá tu GPS." : "La mascota se ocultará.");
+              }}>
+                ⛓️‍💥 Seguir mi GPS
+              </Button>
+              <Button size="sm" variant="outline" onClick={resetUI}>
+                <PanelTopOpen className="w-4 h-4 mr-2" />
+                Nueva ruta
+              </Button>
+            </div>
           ) : (
-            <Badge>Obteniendo GPS…</Badge>
+            <div className="flex gap-2">
+              <Button size="sm" variant={gpsFollow ? "secondary" : "outline"} onClick={() => {
+                const next = !gpsFollow;
+                setGpsFollow(next);
+                toast(next ? "La mascota seguirá tu GPS." : "La mascota se ocultará.");
+              }}>
+                ⛓️‍💥 Seguir mi GPS
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => setChatOpen(true)}>
+                <Search className="w-4 h-4 mr-2" /> Asistente
+              </Button>
+            </div>
           )}
         </div>
       </div>
 
-      {/* Mapa */}
-      <div className="absolute inset-0 pt-12">
+      {/* Mapa (ajusta padding-top según NavBar) */}
+      <div className={`absolute inset-0 ${routeActive ? "pt-10" : "pt-12"}`}>
         <div ref={mapContainer} className="w-full h-full" />
       </div>
 
-      {/* Tarjeta superior */}
-      <Card className="absolute top-16 left-4 right-4 md:left-6 md:right-auto md:w-[840px] z-[1200] p-3 shadow-xl border-border/60 bg-card/95 backdrop-blur">
-        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-          <div className="text-sm text-muted-foreground">
-            Escribe tu destino y te llevo a la <b>entrada</b> más cercana o a la <b>referencia</b>.
+      {/* Tarjeta superior de búsqueda: OCULTA cuando hay ruta */}
+      {!routeActive && (
+        <Card className="absolute top-16 left-4 right-4 md:left-6 md:right-auto md:w-[840px] z-[1200] p-3 shadow-xl border-border/60 bg-card/95 backdrop-blur">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <div className="text-sm text-muted-foreground">
+              Escribe tu destino y te llevo a la <b>entrada</b> más cercana o a la <b>referencia</b>.
+            </div>
+            <div className="flex gap-2">
+              <Button size="sm" variant={gpsFollow ? "secondary" : "outline"} onClick={() => {
+                const next = !gpsFollow;
+                setGpsFollow(next);
+                toast(next ? "La mascota seguirá tu GPS." : "La mascota se ocultará.");
+              }}>
+                ⛓️‍💥 Seguir mi GPS
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => setChatOpen(true)}>
+                <Search className="w-4 h-4 mr-2" /> Asistente
+              </Button>
+            </div>
           </div>
-          <div className="flex gap-2">
-            <Button size="sm" variant={gpsFollow ? "secondary" : "outline"} onClick={() => {
-              const next = !gpsFollow;
-              setGpsFollow(next);
-              toast(next ? "La mascota seguirá tu GPS." : "La mascota se ocultará.");
-            }}>
-              ⛓️‍💥 Seguir mi GPS
+
+          <form className="flex gap-2 items-end" onSubmit={(e) => handleSearch(e)} autoComplete="off">
+            <div className="flex-1">
+              <Label className="text-xs">¿A dónde quieres ir?</Label>
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder='Ej: "Bloque R", "Dirección de TICs" o "plazoleta central"'
+              />
+            </div>
+            <Button type="submit">
+              <Search className="w-4 h-4 mr-2" /> Buscar
             </Button>
-            <Button size="sm" variant="outline" onClick={() => setChatOpen(true)}>
-              <Search className="w-4 h-4 mr-2" /> Asistente
-            </Button>
+          </form>
+
+          <div className="text-xs text-muted-foreground mt-2">
+            Coincide por <b>nombre</b>, <b>código</b>, <b>keywords</b>, <b>actividades</b> (oficinas) y <b>referencias</b>.
           </div>
-        </div>
+        </Card>
+      )}
 
-        <form className="flex gap-2 items-end" onSubmit={(e) => handleSearch(e)} autoComplete="off">
-          <div className="flex-1">
-            <Label className="text-xs">¿A dónde quieres ir?</Label>
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder='Ej: "Bloque R", "Dirección de TICs" o "plazoleta central"'
-            />
-          </div>
-          <Button type="submit">
-            <Search className="w-4 h-4 mr-2" /> Buscar
-          </Button>
-        </form>
-
-        <div className="text-xs text-muted-foreground mt-2">
-          Coincide por <b>nombre</b>, <b>código</b>, <b>keywords</b>, <b>actividades</b> (oficinas) y <b>referencias</b>.
-        </div>
-      </Card>
-
-      {/* Panel edificio */}
-      {selectedBuilding && (
+      {/* Panel edificio: se mantiene, pero lo puedes cerrar en móvil; opcional ocultarlo si prefieres */}
+      {selectedBuilding && !routeActive && (
         <Card className="absolute bottom-4 left-4 right-4 md:left-6 md:right-auto md:w-[720px] z-[1200] p-4 shadow-xl border-border/60 bg-card/95 backdrop-blur">
           <div className="mb-2">
             <div className="text-lg font-semibold">{selectedBuilding.name}</div>
@@ -1064,8 +1103,20 @@ export default function PublicNavigator() {
         </Card>
       )}
 
-      {/* Guía a pie */}
-      {steps.length > 0 && (
+      {/* NUEVO: chip mínimo sobre el destino cuando hay ruta (no tapa el mapa) */}
+      {routeActive && selectedBuilding && (
+        <div className="absolute top-14 left-3 z-[1200]">
+          <div className="rounded-md border bg-card/90 backdrop-blur px-3 py-2 shadow">
+            <div className="text-xs text-muted-foreground">Destino</div>
+            <div className="text-sm font-medium">
+              {selectedRoom ? `${selectedRoom.name}${selectedRoom.room_number ? ` · ${selectedRoom.room_number}` : ""}` : selectedBuilding.name}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Guía a pie: OCULTA por defecto cuando hay ruta; botón para abrir en NavBar */}
+      {(steps.length > 0 && stepsOpen) && (
         <Card className="absolute bottom-4 right-4 z-[1200] max-w-[420px] p-3 bg-card/95 backdrop-blur">
           <div className="flex items-center justify-between mb-2">
             <div className="font-semibold">Guía a pie</div>
@@ -1074,13 +1125,24 @@ export default function PublicNavigator() {
               <Button size="sm" variant="outline" onClick={speakPause}>
                 {ttsPlaying ? "⏸️ Pausar" : "⏯️ Continuar"}
               </Button>
-              <Button size="sm" variant="outline" onClick={speakReset}>⏹️ Detener</Button>
+              <Button size="sm" variant="outline" onClick={() => { setStepsOpen(false); speakReset(); }}>
+                <X className="w-4 h-4 mr-1" /> Cerrar
+              </Button>
             </div>
           </div>
           <ol className="list-decimal pl-5 space-y-1 text-sm max-h-56 overflow-auto">
             {steps.map((s, i) => (<li key={i}>{s}</li>))}
           </ol>
         </Card>
+      )}
+
+      {/* Botón flotante “Nueva ruta” en móvil cuando hay ruta (por si el NavBar queda lejos) */}
+      {routeActive && (
+        <div className="absolute bottom-4 left-4 z-[1200] md:hidden">
+          <Button size="lg" variant="secondary" onClick={resetUI}>
+            <PanelTopOpen className="w-5 h-5 mr-2" /> Nueva ruta
+          </Button>
+        </div>
       )}
 
       {/* Modal chat */}
