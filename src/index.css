@@ -1,0 +1,126 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* UNEMI Brand Design System - Based on official brand guidelines */
+
+@layer base {
+  :root {
+    /* UNEMI Brand Colors */
+    --unemi-navy: 203 100% 14%;        /* #002E45 */
+    --unemi-orange: 25 100% 50%;       /* #FF6900 */
+    --unemi-black: 240 2% 13%;         /* #222223 */
+    --unemi-white: 0 0% 100%;          /* #FFFFFF */
+    
+    /* Semantic tokens based on UNEMI brand */
+    --background: var(--unemi-white);
+    --foreground: var(--unemi-black);
+
+    --card: var(--unemi-white);
+    --card-foreground: var(--unemi-black);
+
+    --popover: var(--unemi-white);
+    --popover-foreground: var(--unemi-black);
+
+    --primary: var(--unemi-navy);
+    --primary-foreground: var(--unemi-white);
+
+    --secondary: 203 100% 96%;
+    --secondary-foreground: var(--unemi-navy);
+
+    --muted: 203 30% 95%;
+    --muted-foreground: 203 20% 45%;
+
+    --accent: var(--unemi-orange);
+    --accent-foreground: var(--unemi-white);
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: var(--unemi-white);
+
+    --border: 203 30% 90%;
+    --input: 203 30% 95%;
+    --ring: var(--unemi-navy);
+
+    /* UNEMI specific design tokens */
+    --unemi-gradient-primary: linear-gradient(135deg, hsl(var(--unemi-navy)), hsl(var(--unemi-orange)));
+    --unemi-gradient-hero: linear-gradient(135deg, hsl(var(--unemi-navy) / 0.95), hsl(var(--unemi-navy) / 0.8));
+    --unemi-shadow-brand: 0 10px 30px -10px hsl(var(--unemi-navy) / 0.3);
+    --unemi-shadow-orange: 0 5px 20px -5px hsl(var(--unemi-orange) / 0.4);
+
+    --radius: 0.5rem;
+
+    --sidebar-background: 0 0% 98%;
+
+    --sidebar-foreground: 240 5.3% 26.1%;
+
+    --sidebar-primary: 240 5.9% 10%;
+
+    --sidebar-primary-foreground: 0 0% 98%;
+
+    --sidebar-accent: 240 4.8% 95.9%;
+
+    --sidebar-accent-foreground: 240 5.9% 10%;
+
+    --sidebar-border: 220 13% 91%;
+
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .dark {
+    --background: var(--unemi-black);
+    --foreground: var(--unemi-white);
+
+    --card: 203 100% 8%;
+    --card-foreground: var(--unemi-white);
+
+    --popover: 203 100% 8%;
+    --popover-foreground: var(--unemi-white);
+
+    --primary: var(--unemi-orange);
+    --primary-foreground: var(--unemi-black);
+
+    --secondary: 203 50% 20%;
+    --secondary-foreground: var(--unemi-white);
+
+    --muted: 203 30% 15%;
+    --muted-foreground: 203 20% 65%;
+
+    --accent: var(--unemi-orange);
+    --accent-foreground: var(--unemi-black);
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: var(--unemi-white);
+
+    --border: 203 30% 25%;
+    --input: 203 30% 20%;
+    --ring: var(--unemi-orange);
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+/* Asegura que la barra de Leaflet Draw quede sobre el mapa */
+.leaflet-draw,
+.leaflet-draw-toolbar {
+  z-index: 1400 !important;
+}
+
+/* Opcional: cursor más claro al dibujar */
+.leaflet-container .leaflet-interactive {
+  cursor: crosshair;
+}
