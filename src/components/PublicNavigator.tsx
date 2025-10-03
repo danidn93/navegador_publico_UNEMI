@@ -20,7 +20,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import { Search, Send, ListOrdered, PanelTopOpen, X } from "lucide-react"; // NUEVO iconos
+import { Search, Send, ListOrdered, PanelTopOpen, X } from "lucide-react";
 
 // Fix iconos Leaflet
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -208,6 +208,28 @@ function buildTurnByTurn(path: L.LatLng[], destino?: L.LatLng): string[] {
   return steps;
 }
 
+// ---- COMPARTIR UBICACIÓN ----
+function buildShareUrl(lat: number, lng: number, zoom?: number) {
+  const base = `${window.location.origin}${window.location.pathname}`;
+  const z = zoom != null ? `&z=${zoom}` : "";
+  return `${base}?lat=${lat.toFixed(6)}&lng=${lng.toFixed(6)}${z}`;
+}
+
+async function copyToClipboard(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast.success("Enlace copiado al portapapeles");
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+    toast.success("Enlace copiado");
+  }
+}
+
 export default function PublicNavigator() {
   // ======= Estado base
   const [query, setQuery] = useState("");
@@ -257,7 +279,7 @@ export default function PublicNavigator() {
   const [steps, setSteps] = useState<string[]>([]);
   const [ttsPlaying, setTtsPlaying] = useState(false);
 
-  // NUEVO: estado de navegación responsiva
+  // Navegación responsiva
   const [routeActive, setRouteActive] = useState(false); // hay una ruta dibujada
   const [stepsOpen, setStepsOpen] = useState(false);     // panel de pasos expandido
 
@@ -276,6 +298,7 @@ export default function PublicNavigator() {
     }
   }, [chatOpen]);
 
+  // Atajo para abrir chat
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "/") { e.preventDefault(); setChatOpen(true); }
@@ -371,6 +394,20 @@ export default function PublicNavigator() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Iniciar vista si vienen lat/lng en la URL compartida
+  useEffect(() => {
+    if (!mapRef.current) return;
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      const lat = parseFloat(sp.get("lat") || "");
+      const lng = parseFloat(sp.get("lng") || "");
+      const z = parseInt(sp.get("z") || "", 10);
+      if (!isNaN(lat) && !isNaN(lng)) {
+        mapRef.current.setView([lat, lng], !isNaN(z) ? z : 18, { animate: true });
+      }
+    } catch {}
+  }, [mapRef.current]);
+
   useEffect(() => { addBuildingMarkers(); }, [buildings]); // eslint-disable-line
 
   // marcador de usuario y mascota
@@ -451,7 +488,10 @@ export default function PublicNavigator() {
       }
     }
 
-    const r = await findRoom(term, category && !["bloque","referencia","plazoleta","bar","corredor"].includes(category) ? category : null);
+    const r = await findRoom(
+      term,
+      category && !["bloque","referencia","plazoleta","bar","corredor"].includes(category) ? category : null
+    );
     if (r) {
       await focusRoom(r);
       pushAssistant(`Listo, te muestro la ruta hacia: ${r.name}${r.room_number ? ` · ${r.room_number}` : ""}.`);
@@ -471,10 +511,18 @@ export default function PublicNavigator() {
 
   const findBuilding = (termRaw: string): Building | null => {
     const term = termRaw.trim().toLowerCase();
-    const byCode =
-      buildings.find((b) => (b.building_code || "").toLowerCase() === term) || null;
-    if (byCode) return byCode;
-    return buildings.find((b) => b.name.toLowerCase().includes(term)) || null;
+
+    // match exacto por código (p. ej. CRAI)
+    const byCodeExact = buildings.find((b) => (b.building_code || "").toLowerCase() === term);
+    if (byCodeExact) return byCodeExact || null;
+
+    // match por nombre (incluye term parcial)
+    const byName = buildings.find((b) => b.name.toLowerCase().includes(term));
+    if (byName) return byName;
+
+    // match por código parcial (por si escriben parte del código)
+    const byCodeLike = buildings.find((b) => (b.building_code || "").toLowerCase().includes(term));
+    return byCodeLike || null;
   };
 
   const findRoom = async (termRaw: string, category: string | null): Promise<Room | null> => {
@@ -721,8 +769,8 @@ export default function PublicNavigator() {
       buildingNoteRef.current = null;
     }
     setSteps([]); // limpia guía
-    setRouteActive(false);  // NUEVO: salir del modo navegación
-    setStepsOpen(false);    // NUEVO: contraer panel de pasos
+    setRouteActive(false);  // salir del modo navegación
+    setStepsOpen(false);    // contraer panel de pasos
   };
 
   const focusRoom = async (room: Room) => {
@@ -783,8 +831,8 @@ export default function PublicNavigator() {
     clearRouteLayers(); // limpiar antes
 
     const ready = await waitForGraphReady();
-    setRouteActive(true);   // NUEVO: entrar a modo navegación
-    setStepsOpen(false);    // NUEVO: pasos ocultos por defecto
+    setRouteActive(true);   // entrar a modo navegación
+    setStepsOpen(false);    // pasos ocultos por defecto
 
     try {
       await ensureRoutingLib();
@@ -797,7 +845,7 @@ export default function PublicNavigator() {
           mapRef.current!.fitBounds(layer.getBounds(), { padding: [60, 60] });
           const insts = buildTurnByTurn(campusPath, toLL);
           setSteps(insts);
-          speakReset(); // no reproducir automáticamente para no “tapar” el mapa
+          speakReset(); // no auto TTS para dejar el mapa limpio
           return;
         }
       }
@@ -823,7 +871,7 @@ export default function PublicNavigator() {
         const coords: L.LatLng[] = (route?.coordinates || []).map((c: any) => L.latLng(c.lat, c.lng));
         const insts = route?.instructions?.map((i: any) => i.text) ?? buildTurnByTurn(coords, toLL);
         setSteps(insts);
-        speakReset(); // NUEVO: no auto TTS
+        speakReset();
       });
 
       ctrl.on("routingerror", () => {
@@ -903,7 +951,7 @@ export default function PublicNavigator() {
     return Array.from(map.entries()).sort((a, b) => a[0] - b[0]);
   }, [buildingRooms]);
 
-  // NUEVO: helper para reiniciar UI/búsqueda
+  // reset rápido
   const resetUI = () => {
     clearRouteLayers();
     setSelectedRoom(null);
@@ -915,53 +963,81 @@ export default function PublicNavigator() {
   // ================= UI =================
   return (
     <div className="relative h-screen w-full bg-background">
-      {/* Header (NavBar): compacto cuando hay ruta */}
-      <div className={`absolute top-0 left-0 right-0 z-20 bg-primary text-primary-foreground transition-all ${routeActive ? "py-2" : "py-3"}`}>
-        <div className="max-w-6xl mx-auto px-4 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="font-bold">UNEMI Campus Navigator — Público</div>
+      {/* Header (NavBar) */}
+      <div className="absolute top-0 left-0 right-0 z-20 bg-primary text-primary-foreground border-b border-primary/30">
+        <div className="max-w-6xl mx-auto px-3 md:px-4 h-12 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="font-semibold text-sm sm:text-base leading-none">UNEMI Campus</div>
             {userLoc ? (
-              <Badge variant="secondary">GPS activo</Badge>
+              <Badge variant="secondary" className="hidden sm:inline-flex">GPS activo</Badge>
             ) : gpsDenied ? (
-              <Badge variant="destructive">GPS no disponible</Badge>
+              <Badge variant="destructive" className="hidden sm:inline-flex">GPS no disponible</Badge>
             ) : (
-              <Badge>Obteniendo GPS…</Badge>
+              <Badge className="hidden sm:inline-flex">Obteniendo GPS…</Badge>
             )}
           </div>
 
-          {/* NUEVO: acciones de navegación en NavBar cuando hay ruta */}
-          {routeActive ? (
-            <div className="flex items-center gap-2">
-              <Button size="sm" variant="secondary" onClick={() => setStepsOpen((v) => !v)}>
-                <ListOrdered className="w-4 h-4 mr-2" />
-                {stepsOpen ? "Ocultar pasos" : "Ver pasos"}
-              </Button>
-              <Button size="sm" variant={gpsFollow ? "secondary" : "outline"} onClick={() => {
-                const next = !gpsFollow;
-                setGpsFollow(next);
-                toast(next ? "La mascota seguirá tu GPS." : "La mascota se ocultará.");
-              }}>
-                ⛓️‍💥 Seguir mi GPS
-              </Button>
-              <Button size="sm" variant="outline" onClick={resetUI}>
-                <PanelTopOpen className="w-4 h-4 mr-2" />
-                Nueva ruta
-              </Button>
-            </div>
-          ) : (
-            <div className="flex gap-2">
-              <Button size="sm" variant={gpsFollow ? "secondary" : "outline"} onClick={() => {
-                const next = !gpsFollow;
-                setGpsFollow(next);
-                toast(next ? "La mascota seguirá tu GPS." : "La mascota se ocultará.");
-              }}>
-                ⛓️‍💥 Seguir mi GPS
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => setChatOpen(true)}>
-                <Search className="w-4 h-4 mr-2" /> Asistente
-              </Button>
-            </div>
-          )}
+          {/* Acciones derecha */}
+          <div className="flex items-center gap-2">
+            {/* Compartir ubicación: usa userLoc si existe; si no, el centro del mapa */}
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                const center = mapRef.current?.getCenter();
+                const lat = userLoc?.lat ?? center?.lat;
+                const lng = userLoc?.lng ?? center?.lng;
+                const zoom = mapRef.current?.getZoom();
+                if (lat == null || lng == null) { toast.error("No hay ubicación para compartir aún"); return; }
+                const url = buildShareUrl(lat, lng, zoom);
+                copyToClipboard(url);
+              }}
+              title="Copiar enlace con mi ubicación"
+            >
+              🔗 Compartir
+            </Button>
+
+            {routeActive ? (
+              <>
+                {/* Buscar otro destino SIN reiniciar todo */}
+                <Button size="sm" variant="outline" onClick={() => setChatOpen(true)}>
+                  <Search className="w-4 h-4 mr-2" /> Buscar
+                </Button>
+
+                {/* Instrucciones desplegables */}
+                <Button size="sm" variant="secondary" onClick={() => setStepsOpen(v => !v)}>
+                  {stepsOpen ? "Ocultar instrucciones" : "Instrucciones"}
+                </Button>
+
+                {/* Seguir GPS */}
+                <Button size="sm" variant={gpsFollow ? "secondary" : "outline"} onClick={() => {
+                  const next = !gpsFollow;
+                  setGpsFollow(next);
+                  toast(next ? "La mascota seguirá tu GPS." : "La mascota se ocultará.");
+                }}>
+                  ⛓️‍💥 Seguir GPS
+                </Button>
+
+                {/* Reiniciar flujo si quieres empezar de cero */}
+                <Button size="sm" variant="outline" onClick={resetUI}>
+                  Nueva ruta
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button size="sm" variant={gpsFollow ? "secondary" : "outline"} onClick={() => {
+                  const next = !gpsFollow;
+                  setGpsFollow(next);
+                  toast(next ? "La mascota seguirá tu GPS." : "La mascota se ocultará.");
+                }}>
+                  ⛓️‍💥 Seguir GPS
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => setChatOpen(true)}>
+                  <Search className="w-4 h-4 mr-2" /> Asistente
+                </Button>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1011,7 +1087,7 @@ export default function PublicNavigator() {
         </Card>
       )}
 
-      {/* Panel edificio: se mantiene, pero lo puedes cerrar en móvil; opcional ocultarlo si prefieres */}
+      {/* Panel edificio: oculto durante ruta para no tapar el mapa */}
       {selectedBuilding && !routeActive && (
         <Card className="absolute bottom-4 left-4 right-4 md:left-6 md:right-auto md:w-[720px] z-[1200] p-4 shadow-xl border-border/60 bg-card/95 backdrop-blur">
           <div className="mb-2">
@@ -1103,7 +1179,7 @@ export default function PublicNavigator() {
         </Card>
       )}
 
-      {/* NUEVO: chip mínimo sobre el destino cuando hay ruta (no tapa el mapa) */}
+      {/* Chip destino mínimo durante ruta */}
       {routeActive && selectedBuilding && (
         <div className="absolute top-14 left-3 z-[1200]">
           <div className="rounded-md border bg-card/90 backdrop-blur px-3 py-2 shadow">
@@ -1115,11 +1191,11 @@ export default function PublicNavigator() {
         </div>
       )}
 
-      {/* Guía a pie: OCULTA por defecto cuando hay ruta; botón para abrir en NavBar */}
+      {/* Instrucciones (plegables) */}
       {(steps.length > 0 && stepsOpen) && (
         <Card className="absolute bottom-4 right-4 z-[1200] max-w-[420px] p-3 bg-card/95 backdrop-blur">
           <div className="flex items-center justify-between mb-2">
-            <div className="font-semibold">Guía a pie</div>
+            <div className="font-semibold">Instrucciones</div>
             <div className="flex gap-2">
               <Button size="sm" variant="outline" onClick={() => speakAll(steps)}>▶️ Reproducir</Button>
               <Button size="sm" variant="outline" onClick={speakPause}>
@@ -1136,7 +1212,7 @@ export default function PublicNavigator() {
         </Card>
       )}
 
-      {/* Botón flotante “Nueva ruta” en móvil cuando hay ruta (por si el NavBar queda lejos) */}
+      {/* Botón flotante “Nueva ruta” en móvil */}
       {routeActive && (
         <div className="absolute bottom-4 left-4 z-[1200] md:hidden">
           <Button size="lg" variant="secondary" onClick={resetUI}>
@@ -1145,11 +1221,11 @@ export default function PublicNavigator() {
         </div>
       )}
 
-      {/* Modal chat */}
+      {/* Modal chat/búsqueda */}
       <Dialog open={chatOpen} onOpenChange={setChatOpen}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Te ayudo a llegar</DialogTitle>
+            <DialogTitle>{routeActive ? "Buscar otro destino" : "Te ayudo a llegar"}</DialogTitle>
             <DialogDescription>Escribe “Bloque R”, “Aula 201”, “Cómo llego a Dirección de TICs” o “plazoleta central”.</DialogDescription>
           </DialogHeader>
 
