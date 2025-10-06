@@ -5,6 +5,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "leaflet-routing-machine/dist/leaflet-routing-machine.css";
+import {
+  DialogPortal, DialogOverlay
+} from "@/components/ui/dialog";
 
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -20,7 +23,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import { Search, Send, ListOrdered, PanelTopOpen, X } from "lucide-react";
+import { Search, Send, PanelTopOpen, X, MapPin } from "lucide-react";
 
 // Fix iconos Leaflet
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -32,6 +35,27 @@ L.Icon.Default.mergeOptions({
   shadowUrl:
     "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png",
 });
+
+// ======== Utils de normalización para búsquedas robustas ========
+const norm = (s: string) =>
+  (s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+
+// Divide la consulta en tokens útiles (2+ chars), sin tildes ni símbolos
+const tokenize = (s: string) =>
+  norm(s)
+    .split(/\s+/)
+    .map(t => t.replace(/[^\p{L}\p{N}]/gu, ""))
+    .filter(t => t.length >= 2);
+
+// ¿El texto contiene TODOS los tokens (parciales)?
+const matchAllTokens = (haystack: string, tokens: string[]) => {
+  const H = norm(haystack);
+  return tokens.every(t => H.includes(t));
+};
 
 type BuildingState = "HABILITADO" | "REPARACIÓN";
 type Building = {
@@ -214,7 +238,6 @@ function buildShareUrl(lat: number, lng: number, zoom?: number) {
   const z = zoom != null ? `&z=${zoom}` : "";
   return `${base}?lat=${lat.toFixed(6)}&lng=${lng.toFixed(6)}${z}`;
 }
-
 async function copyToClipboard(text: string) {
   try {
     await navigator.clipboard.writeText(text);
@@ -230,12 +253,20 @@ async function copyToClipboard(text: string) {
   }
 }
 
+/** === Tipos/estado para resultados múltiples === */
+type SearchHit =
+  | { kind: "room"; room: Room; label: string; sub?: string }
+  | { kind: "building"; building: Building; label: string; sub?: string }
+  | { kind: "landmark"; landmark: Landmark; label: string; sub?: string };
+
 export default function PublicNavigator() {
   // ======= Estado base
   const [query, setQuery] = useState("");
   const [userLoc, setUserLoc] = useState<{ lat: number; lng: number } | null>(null);
   const [gpsDenied, setGpsDenied] = useState(false);
-  const [gpsFollow, setGpsFollow] = useState(true);
+
+  // Seguir GPS activo por defecto (no hay botón para cambiarlo)
+  const gpsFollow = true;
 
   const [isAdmin, setIsAdmin] = useState(false);
   useEffect(() => {
@@ -256,6 +287,9 @@ export default function PublicNavigator() {
 
   const graphRef = useRef<Map<NodeId, Node> | null>(null);
   const segmentsRef = useRef<Segment[] | null>(null);
+
+  // Punto compartido (si llega en la URL ?lat&lng)
+  const [sharedTarget, setSharedTarget] = useState<L.LatLng | null>(null);
 
   // Mapa
   const mapContainer = useRef<HTMLDivElement>(null);
@@ -283,13 +317,17 @@ export default function PublicNavigator() {
   const [routeActive, setRouteActive] = useState(false); // hay una ruta dibujada
   const [stepsOpen, setStepsOpen] = useState(false);     // panel de pasos expandido
 
-  // Chat
+  // Chat (se conserva para atajo “/”, pero no se muestra botón en tarjeta)
   const [chatOpen, setChatOpen] = useState(false);
   const [chatMsgs, setChatMsgs] = useState<ChatMsg[]>([
     { role: "assistant", text: "Hola 👋 ¿A qué edificio, espacio o referencia quieres ir? (Ej: “Bloque R”, “Dirección de TICs” o “plazoleta central”)." },
   ]);
   const [chatInput, setChatInput] = useState("");
   const chatInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Resultados múltiples
+  const [resultsOpen, setResultsOpen] = useState(false);
+  const [resultHits, setResultHits] = useState<SearchHit[]>([]);
 
   useEffect(() => {
     if (chatOpen) {
@@ -298,7 +336,7 @@ export default function PublicNavigator() {
     }
   }, [chatOpen]);
 
-  // Atajo para abrir chat
+  // Atajo para abrir chat rápido
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "/") { e.preventDefault(); setChatOpen(true); }
@@ -337,12 +375,12 @@ export default function PublicNavigator() {
         .eq("state", "ABIERTO");
       if (error) toast.error("No se pudo cargar la red peatonal");
       else {
-        const norm = (data || []).map((fw: any) => ({
+        const normF = (data || []).map((fw: any) => ({
           id: fw.id,
           state: fw.state,
           geom: typeof fw.geom === "string" ? JSON.parse(fw.geom) : fw.geom,
         })) as Footway[];
-        setFootways(norm);
+        setFootways(normF);
       }
     })();
 
@@ -394,7 +432,7 @@ export default function PublicNavigator() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Iniciar vista si vienen lat/lng en la URL compartida
+  // Iniciar vista si vienen lat/lng en la URL compartida (y guardar el punto)
   useEffect(() => {
     if (!mapRef.current) return;
     try {
@@ -403,14 +441,18 @@ export default function PublicNavigator() {
       const lng = parseFloat(sp.get("lng") || "");
       const z = parseInt(sp.get("z") || "", 10);
       if (!isNaN(lat) && !isNaN(lng)) {
-        mapRef.current.setView([lat, lng], !isNaN(z) ? z : 18, { animate: true });
+        const pt = L.latLng(lat, lng);
+        setSharedTarget(pt);
+        mapRef.current.setView(pt, !isNaN(z) ? z : 18, { animate: true });
+        const m = L.marker(pt, { title: "Punto compartido" }).addTo(mapRef.current);
+        m.bindPopup("<b>Punto compartido</b>").openPopup();
       }
     } catch {}
   }, [mapRef.current]);
 
   useEffect(() => { addBuildingMarkers(); }, [buildings]); // eslint-disable-line
 
-  // marcador de usuario y mascota
+  // marcador de usuario y mascota (siempre sigue el GPS)
   useEffect(() => {
     if (!mapRef.current || !userLoc) return;
 
@@ -431,11 +473,6 @@ export default function PublicNavigator() {
           .bindTooltip("¡Sígueme! 🐯", { permanent: false, direction: "top", offset: [0, -36] });
       } else {
         walkerRef.current.setLatLng([userLoc.lat, userLoc.lng]);
-      }
-    } else {
-      if (walkerRef.current) {
-        mapRef.current.removeLayer(walkerRef.current);
-        walkerRef.current = null;
       }
     }
   }, [userLoc, gpsFollow]);
@@ -461,8 +498,8 @@ export default function PublicNavigator() {
 
   // ====== Búsqueda
   const parseIntent = (raw: string) => {
-    const s = raw.trim().toLowerCase();
-    const re = /c[oó]mo\s+llego\s+(?:al|a\s+la)\s+(bloque|aula|laboratorio|taller|oficina|facultad|departamento|referencia|plazoleta|bar|corredor)\s+(.+)/i;
+    const s = norm(raw);
+    const re = /como\s+llego\s+(?:al|a\s+la)\s+(bloque|aula|laboratorio|taller|oficina|facultad|departamento|referencia|plazoleta|bar|corredor)\s+(.+)/i;
     const m = s.match(re);
     if (m) return { category: m[1], term: m[2].trim() };
     for (const cat of CATEGORY_WORDS) {
@@ -472,81 +509,50 @@ export default function PublicNavigator() {
     return { category: null as string | null, term: s };
   };
 
-  const handleSearch = async (e?: React.FormEvent, custom?: string) => {
-    e?.preventDefault();
-    const q = (custom ?? query).trim();
-    if (!q) return;
+  // ==== Buildings: coincidencias parciales por tokens (name/building_code), insensible a tildes ====
+  const findBuilding = (termRaw: string): Building[] => {
+    let t = norm(termRaw).replace(/^bloque\s+/, ""); // permite “bloque crai” -> “crai”
+    const tokens = tokenize(t);
 
-    const { category, term } = parseIntent(q);
+    // Candidatos: contienen TODOS los tokens
+    const cands = buildings.filter((b) => {
+      const label = `${b.name} ${b.building_code ?? ""}`;
+      return matchAllTokens(label, tokens);
+    });
 
-    if (!category || category === "bloque") {
-      const b = findBuilding(term);
-      if (b) {
-        await handleSelectBuilding(b, true);
-        pushAssistant(`Te llevo al bloque: ${b.name}.`);
-        return;
-      }
+    // Si nada, relaja: cualquiera que contenga al menos un token
+    if (cands.length === 0) {
+      return buildings.filter((b) => {
+        const label = `${b.name} ${b.building_code ?? ""}`;
+        const H = norm(label);
+        return tokens.some(tok => H.includes(tok));
+      });
     }
-
-    const r = await findRoom(
-      term,
-      category && !["bloque","referencia","plazoleta","bar","corredor"].includes(category) ? category : null
-    );
-    if (r) {
-      await focusRoom(r);
-      pushAssistant(`Listo, te muestro la ruta hacia: ${r.name}${r.room_number ? ` · ${r.room_number}` : ""}.`);
-      return;
-    }
-
-    const lm = await findLandmark(term, category);
-    if (lm) {
-      await focusLandmark(lm);
-      pushAssistant(`Perfecto, te llevo a: ${lm.name ?? lm.type}.`);
-      return;
-    }
-
-    toast.error("Sin resultados");
-    pushAssistant("No encontré resultados. Prueba “Bloque R”, “Aula 201”, “Dirección de TICs” o “plazoleta central”.");
+    return cands;
   };
 
-  const findBuilding = (termRaw: string): Building | null => {
-    const term = termRaw.trim().toLowerCase();
-
-    // match exacto por código (p. ej. CRAI)
-    const byCodeExact = buildings.find((b) => (b.building_code || "").toLowerCase() === term);
-    if (byCodeExact) return byCodeExact || null;
-
-    // match por nombre (incluye term parcial)
-    const byName = buildings.find((b) => b.name.toLowerCase().includes(term));
-    if (byName) return byName;
-
-    // match por código parcial (por si escriben parte del código)
-    const byCodeLike = buildings.find((b) => (b.building_code || "").toLowerCase().includes(term));
-    return byCodeLike || null;
-  };
-
-  const findRoom = async (termRaw: string, category: string | null): Promise<Room | null> => {
-    const term = termRaw.trim();
-    const tokens = term
-      .toLowerCase()
-      .split(/\s+/)
-      .map((t) => t.replace(/[^\p{L}\p{N}]/gu, ""))
-      .filter((t) => t.length >= 2);
+  // ==== Rooms: OR amplio en SQL + filtro por tokens en cliente (name, room_number, keywords[], actividades[]) ====
+  const findRooms = async (termRaw: string, category: string | null): Promise<Room[]> => {
+    const raw = termRaw.trim();
+    const tokens = tokenize(raw);
 
     const kwArray = `{${tokens.join(",")}}`;
-    const orParts = [
-      `name.ilike.%${term}%`,
-      `room_number.ilike.%${term}%`,
+
+    const orParts: string[] = [
+      `name.ilike.%${raw}%`,
+      `room_number.ilike.%${raw}%`,
     ];
 
-    if (tokens.length > 1) {
+    // tokens parciales en name/room_number
+    tokens.forEach(tok => {
+      orParts.push(`name.ilike.%${tok}%`);
+      orParts.push(`room_number.ilike.%${tok}%`);
+    });
+
+    // arrays por overlaps
+    if (tokens.length > 0) {
       orParts.push(`keywords.ov.${kwArray}`);
-      orParts.push(`equipment.ov.${kwArray}`);
       orParts.push(`actividades.ov.${kwArray}`);
-    } else if (tokens.length === 1) {
-      orParts.push(`keywords.cs.{${tokens[0]}}`);
-      orParts.push(`equipment.cs.{${tokens[0]}}`);
-      orParts.push(`actividades.cs.{${tokens[0]}}`);
     }
 
     const { data, error } = await supabase
@@ -555,43 +561,118 @@ export default function PublicNavigator() {
         "id,floor_id,name,room_number,description,directions,room_type_id,capacity,equipment,keywords,actividades"
       )
       .or(orParts.join(","))
-      .limit(30);
+      .limit(200);
 
-    if (error) { console.error(error); toast.error("Error buscando espacios"); return null; }
+    if (error) { console.error(error); toast.error("Error buscando espacios"); return []; }
 
-    const rooms = (data || []) as Room[];
-    if (rooms.length === 0) return null;
+    // Filtro final: exigir TODOS los tokens en algún campo consolidado
+    const filtered = (data || []).filter((r: any) => {
+      const bag = [
+        r.name ?? "",
+        r.room_number ?? "",
+        r.description ?? "",
+        ...(r.keywords ?? []),
+        ...(r.actividades ?? []),
+      ].join(" ");
+      return matchAllTokens(bag, tokens);
+    }) as Room[];
 
-    const prioritized =
-      (category
-        ? rooms.find((r) =>
-            (r.name.toLowerCase() + " " + (r.room_number || "")).includes(category)
-          )
-        : undefined) || rooms[0];
+    // Priorización por categoría (si aplica)
+    if (category && !["bloque","referencia","plazoleta","bar","corredor"].includes(category)) {
+      const cat = norm(category);
+      filtered.sort((a, b) => {
+        const aHit = norm(`${a.name} ${a.room_number ?? ""}`).includes(cat) ? 1 : 0;
+        const bHit = norm(`${b.name} ${b.room_number ?? ""}`).includes(cat) ? 1 : 0;
+        return bHit - aHit;
+      });
+    }
 
-    return prioritized;
+    return filtered;
   };
 
-  const findLandmark = async (termRaw: string, category: string | null): Promise<Landmark | null> => {
-    const term = termRaw.trim().toLowerCase();
+  // ==== Landmarks: traer lote y filtrar por tokens (name/type) sin tildes ====
+  const findLandmarksMany = async (termRaw: string): Promise<Landmark[]> => {
+    const tokens = tokenize(termRaw);
+
     const { data, error } = await supabase
       .from("landmarks")
       .select("id,name,type,location")
-      .or([
-        `name.ilike.%${term}%`,
-        `type.eq.${term}`,
-      ].join(","))
-      .limit(20);
+      .limit(200);
 
-    if (error) { console.error(error); return null; }
+    if (error) { console.error(error); return []; }
+
     const list = (data || []) as Landmark[];
-    if (list.length === 0) return null;
+    return list.filter(lm => {
+      const label = `${lm.name ?? ""} ${lm.type}`;
+      return matchAllTokens(label, tokens);
+    });
+  };
 
-    if (category && ["referencia","plazoleta","bar","corredor"].includes(category)) {
-      const byType = list.find(l => l.type === (category === "referencia" ? "otro" : category));
-      if (byType) return byType;
+  // ======= Búsqueda unificada con lista de resultados =======
+  const handleSearch = async (e?: React.FormEvent, custom?: string) => {
+    e?.preventDefault();
+    const q = (custom ?? query).trim();
+    if (!q) return;
+
+    const { category, term } = parseIntent(q);
+
+    // 1) Buildings
+    const bList = (!category || category === "bloque") ? findBuilding(term) : [];
+
+    // 2) Rooms
+    const rList = await findRooms(
+      term,
+      category && !["bloque","referencia","plazoleta","bar","corredor"].includes(category) ? category : null
+    );
+
+    // 3) Landmarks
+    const lList = await findLandmarksMany(term);
+
+    const hits: SearchHit[] = [
+      ...bList.map(b => ({ kind: "building", building: b, label: b.name } as SearchHit)),
+      ...rList.map(r => ({
+        kind: "room",
+        room: r,
+        label: `${r.name}${r.room_number ? ` · ${r.room_number}` : ""}`,
+        sub: r.description || undefined,
+      }) as SearchHit),
+      ...lList.map(l => ({ kind: "landmark", landmark: l, label: l.name ?? l.type } as SearchHit)),
+    ];
+
+    if (hits.length === 0) {
+      toast.error("Sin resultados");
+      pushAssistant("No encontré resultados. Prueba “Bloque CRAI”, “Aula 201”, “Dirección de TICs” o “plazoleta central”.");
+      return;
     }
-    return list[0];
+
+    if (hits.length === 1) {
+      await resolveHit(hits[0]);
+      return;
+    }
+
+    // varios resultados → mostrar diálogo
+    setResultHits(hits);
+    setResultsOpen(true);
+  };
+
+  // Resolver un resultado elegido
+  const resolveHit = async (hit: SearchHit) => {
+    setResultsOpen(false);
+    if (hit.kind === "building") {
+      await handleSelectBuilding(hit.building, true);
+      pushAssistant(`Te llevo al bloque: ${hit.building.name}.`);
+      return;
+    }
+    if (hit.kind === "landmark") {
+      await focusLandmark(hit.landmark);
+      pushAssistant(`Perfecto, te llevo a: ${hit.label}.`);
+      return;
+    }
+    if (hit.kind === "room") {
+      await focusRoom(hit.room);
+      pushAssistant(`Listo, te muestro la ruta hacia: ${hit.label}.`);
+      return;
+    }
   };
 
   // ====== Select building / rooms
@@ -791,7 +872,12 @@ export default function PublicNavigator() {
       if (bErr || !building) { toast.error("El edificio no está habilitado."); return; }
 
       await handleSelectBuilding(building as Building, true);
-      setSelectedRoom({ ...room, floor: { id: floor.id, floor_number: (floor as any).floor_number } });
+
+      const roomWithFloor: Room = {
+        ...room,
+        floor: { id: floor.id, floor_number: (floor as any).floor_number }
+      };
+      setSelectedRoom(roomWithFloor);
 
       if (!userLoc) {
         toast.error("Activa el GPS para trazar la ruta a la entrada.");
@@ -799,7 +885,7 @@ export default function PublicNavigator() {
       }
       const from = L.latLng(userLoc.lat, userLoc.lng);
       const to = bestEntranceForBuilding((building as Building).id, from);
-      await drawFootRoute(from, to);
+      await drawFootRoute(from, to, roomWithFloor); // <-- pasa el room explícito
     } catch (e) { console.error(e); toast.error("No se pudo focalizar el espacio"); }
   };
 
@@ -815,7 +901,7 @@ export default function PublicNavigator() {
       L.popup().setLatLng(ll).setContent(`<b>${lm.name ?? lm.type}</b>`).openOn(mapRef.current);
       return;
     }
-    await drawFootRoute(L.latLng(userLoc.lat, userLoc.lng), ll);
+    await drawFootRoute(L.latLng(userLoc.lat, userLoc.lng), ll); // sin roomInfo
     mapRef.current.setView(ll, 18, { animate: true });
     L.popup().setLatLng(ll).setContent(`<b>${lm.name ?? lm.type}</b>`).openOn(mapRef.current);
   };
@@ -825,7 +911,19 @@ export default function PublicNavigator() {
     await import("leaflet-routing-machine");
   };
 
-  const drawFootRoute = async (fromLL: L.LatLng, toLL: L.LatLng) => {
+  // Anexa información de piso/directions al final de pasos
+  const appendRoomInfoToSteps = (base: string[], room?: Room) => {
+    const out = [...base];
+    if (room?.floor?.floor_number != null) {
+      out.push(`El destino está en el piso ${room.floor.floor_number}.`);
+    }
+    const d = (room?.directions || "").trim();
+    if (d) out.push(`Indicaciones adicionales: ${d}`);
+    return out;
+  };
+
+  // ===== drawFootRoute recibe roomInfo opcional =====
+  const drawFootRoute = async (fromLL: L.LatLng, toLL: L.LatLng, roomInfo?: Room) => {
     if (!mapRef.current) return;
 
     clearRouteLayers(); // limpiar antes
@@ -844,7 +942,8 @@ export default function PublicNavigator() {
           routeLayerRef.current = layer.addTo(mapRef.current!);
           mapRef.current!.fitBounds(layer.getBounds(), { padding: [60, 60] });
           const insts = buildTurnByTurn(campusPath, toLL);
-          setSteps(insts);
+          const finalInsts = appendRoomInfoToSteps(insts, roomInfo);
+          setSteps(finalInsts);
           speakReset(); // no auto TTS para dejar el mapa limpio
           return;
         }
@@ -870,15 +969,16 @@ export default function PublicNavigator() {
         const route = e.routes?.[0];
         const coords: L.LatLng[] = (route?.coordinates || []).map((c: any) => L.latLng(c.lat, c.lng));
         const insts = route?.instructions?.map((i: any) => i.text) ?? buildTurnByTurn(coords, toLL);
-        setSteps(insts);
+        const finalInsts = appendRoomInfoToSteps(insts, roomInfo);
+        setSteps(finalInsts);
         speakReset();
       });
 
       ctrl.on("routingerror", () => {
         toast.message("No se pudo obtener ruta peatonal, dibujo una guía directa.");
         drawFallbackLine(fromLL, toLL);
-        const dist = Math.round(haversine(fromLL, toLL));
-        const insts = [`Camina en línea recta hacia el destino (≈ ${dist} m).`];
+        let insts = [`Camina en línea recta hacia el destino (≈ ${Math.round(haversine(fromLL, toLL))} m).`];
+        insts = appendRoomInfoToSteps(insts, roomInfo);
         setSteps(insts);
         speakReset();
       });
@@ -886,8 +986,8 @@ export default function PublicNavigator() {
       console.error(e);
       toast.error("No se pudo trazar la ruta. Te muestro una guía directa.");
       drawFallbackLine(fromLL, toLL);
-      const dist = Math.round(haversine(fromLL, toLL));
-      const insts = [`Camina en línea recta hacia el destino (≈ ${dist} m).`];
+      let insts = [`Camina en línea recta hacia el destino (≈ ${Math.round(haversine(fromLL, toLL))} m).`];
+      insts = appendRoomInfoToSteps(insts, roomInfo);
       setSteps(insts);
       speakReset();
     }
@@ -977,67 +1077,8 @@ export default function PublicNavigator() {
             )}
           </div>
 
-          {/* Acciones derecha */}
-          <div className="flex items-center gap-2">
-            {/* Compartir ubicación: usa userLoc si existe; si no, el centro del mapa */}
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => {
-                const center = mapRef.current?.getCenter();
-                const lat = userLoc?.lat ?? center?.lat;
-                const lng = userLoc?.lng ?? center?.lng;
-                const zoom = mapRef.current?.getZoom();
-                if (lat == null || lng == null) { toast.error("No hay ubicación para compartir aún"); return; }
-                const url = buildShareUrl(lat, lng, zoom);
-                copyToClipboard(url);
-              }}
-              title="Copiar enlace con mi ubicación"
-            >
-              🔗 Compartir
-            </Button>
-
-            {routeActive ? (
-              <>
-                {/* Buscar otro destino SIN reiniciar todo */}
-                <Button size="sm" variant="outline" onClick={() => setChatOpen(true)}>
-                  <Search className="w-4 h-4 mr-2" /> Buscar
-                </Button>
-
-                {/* Instrucciones desplegables */}
-                <Button size="sm" variant="secondary" onClick={() => setStepsOpen(v => !v)}>
-                  {stepsOpen ? "Ocultar instrucciones" : "Instrucciones"}
-                </Button>
-
-                {/* Seguir GPS */}
-                <Button size="sm" variant={gpsFollow ? "secondary" : "outline"} onClick={() => {
-                  const next = !gpsFollow;
-                  setGpsFollow(next);
-                  toast(next ? "La mascota seguirá tu GPS." : "La mascota se ocultará.");
-                }}>
-                  ⛓️‍💥 Seguir GPS
-                </Button>
-
-                {/* Reiniciar flujo si quieres empezar de cero */}
-                <Button size="sm" variant="outline" onClick={resetUI}>
-                  Nueva ruta
-                </Button>
-              </>
-            ) : (
-              <>
-                <Button size="sm" variant={gpsFollow ? "secondary" : "outline"} onClick={() => {
-                  const next = !gpsFollow;
-                  setGpsFollow(next);
-                  toast(next ? "La mascota seguirá tu GPS." : "La mascota se ocultará.");
-                }}>
-                  ⛓️‍💥 Seguir GPS
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => setChatOpen(true)}>
-                  <Search className="w-4 h-4 mr-2" /> Asistente
-                </Button>
-              </>
-            )}
-          </div>
+          {/* Acciones derecha: (Quitado botón Compartir del navbar) */}
+          <div className="flex items-center gap-2" />
         </div>
       </div>
 
@@ -1051,18 +1092,25 @@ export default function PublicNavigator() {
         <Card className="absolute top-16 left-4 right-4 md:left-6 md:right-auto md:w-[840px] z-[1200] p-3 shadow-xl border-border/60 bg-card/95 backdrop-blur">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
             <div className="text-sm text-muted-foreground">
-              Escribe tu destino y te llevo a la <b>entrada</b> más cercana o a la <b>referencia</b>.
+              Escribe tu destino y te llevo a la <b>entrada</b> más cercana o a la <b>referencia</b>. También puedes pegar un enlace compartido con <code>?lat=…&lng=…</code>.
             </div>
             <div className="flex gap-2">
-              <Button size="sm" variant={gpsFollow ? "secondary" : "outline"} onClick={() => {
-                const next = !gpsFollow;
-                setGpsFollow(next);
-                toast(next ? "La mascota seguirá tu GPS." : "La mascota se ocultará.");
-              }}>
-                ⛓️‍💥 Seguir mi GPS
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => setChatOpen(true)}>
-                <Search className="w-4 h-4 mr-2" /> Asistente
+              {/* Reemplaza “Asistente” por “Compartir” */}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  const center = mapRef.current?.getCenter();
+                  const lat = userLoc?.lat ?? center?.lat;
+                  const lng = userLoc?.lng ?? center?.lng;
+                  const zoom = mapRef.current?.getZoom();
+                  if (lat == null || lng == null) { toast.error("No hay ubicación para compartir aún"); return; }
+                  const url = buildShareUrl(lat, lng, zoom);
+                  copyToClipboard(url);
+                }}
+                title="Copiar enlace con mi ubicación o vista actual"
+              >
+                <MapPin className="w-4 h-4 mr-2" /> Compartir
               </Button>
             </div>
           </div>
@@ -1073,7 +1121,7 @@ export default function PublicNavigator() {
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder='Ej: "Bloque R", "Dirección de TICs" o "plazoleta central"'
+                placeholder='Ej: "Bloque CRAI", "Dirección de TICs", "Aula 201" o "plazoleta central"'
               />
             </div>
             <Button type="submit">
@@ -1082,7 +1130,7 @@ export default function PublicNavigator() {
           </form>
 
           <div className="text-xs text-muted-foreground mt-2">
-            Coincide por <b>nombre</b>, <b>código</b>, <b>keywords</b>, <b>actividades</b> (oficinas) y <b>referencias</b>.
+            Coincide por <b>nombre</b>, <b>código de bloque</b> (ej. <b>CRAI</b>), <b>keywords</b>, <b>actividades</b> y <b>referencias</b>. No distingue mayúsculas ni acentos.
           </div>
         </Card>
       )}
@@ -1154,7 +1202,8 @@ export default function PublicNavigator() {
                 if (!userLoc) { toast.error("Activa el GPS para trazar la ruta."); return; }
                 const from = L.latLng(userLoc.lat, userLoc.lng);
                 const to = bestEntranceForBuilding(selectedBuilding.id, from);
-                drawFootRoute(from, to);
+                // Si hay room seleccionado, agrega piso+directions en los pasos
+                drawFootRoute(from, to, selectedRoom ?? undefined);
               }}
             >
               Trazar ruta a la ENTRADA
@@ -1191,25 +1240,76 @@ export default function PublicNavigator() {
         </div>
       )}
 
-      {/* Instrucciones (plegables) */}
-      {(steps.length > 0 && stepsOpen) && (
-        <Card className="absolute bottom-4 right-4 z-[1200] max-w-[420px] p-3 bg-card/95 backdrop-blur">
-          <div className="flex items-center justify-between mb-2">
-            <div className="font-semibold">Instrucciones</div>
+      {/* Panel para punto compartido */}
+      {sharedTarget && (
+        <div className="absolute top-14 right-3 z-[1200]">
+          <div className="rounded-md border bg-card/90 backdrop-blur px-3 py-2 shadow max-w-xs">
+            <div className="text-xs text-muted-foreground">Punto compartido</div>
+            <div className="text-sm mb-2">¿Quieres ir a ese punto?</div>
             <div className="flex gap-2">
-              <Button size="sm" variant="outline" onClick={() => speakAll(steps)}>▶️ Reproducir</Button>
-              <Button size="sm" variant="outline" onClick={speakPause}>
-                {ttsPlaying ? "⏸️ Pausar" : "⏯️ Continuar"}
+              <Button
+                size="sm"
+                onClick={() => {
+                  if (!userLoc) { toast.error("Activa el GPS para trazar la ruta."); return; }
+                  drawFootRoute(L.latLng(userLoc.lat, userLoc.lng), sharedTarget);
+                }}
+              >
+                Ir a este punto
               </Button>
-              <Button size="sm" variant="outline" onClick={() => { setStepsOpen(false); speakReset(); }}>
-                <X className="w-4 h-4 mr-1" /> Cerrar
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  if (!mapRef.current) return;
+                  mapRef.current.setView(sharedTarget, 18, { animate: true });
+                }}
+              >
+                Ver
               </Button>
             </div>
           </div>
-          <ol className="list-decimal pl-5 space-y-1 text-sm max-h-56 overflow-auto">
-            {steps.map((s, i) => (<li key={i}>{s}</li>))}
-          </ol>
-        </Card>
+        </div>
+      )}
+
+      {/* Instrucciones: MODAL responsive (con z-index alto para estar sobre Leaflet) */}
+      <Dialog
+        open={routeActive && stepsOpen && steps.length > 0}
+        onOpenChange={(o) => { if (!o) { setStepsOpen(false); speakReset(); } }}
+      >
+        <DialogPortal>
+          {/* Overlay por encima del mapa */}
+          <DialogOverlay className="fixed inset-0 z-[3000] bg-black/50 backdrop-blur-sm" />
+          {/* Contenido del modal, también elevado */}
+          <DialogContent className="z-[3001] p-0 max-w-none w-[100vw] h-[85vh] sm:h-auto sm:max-h-[70vh] sm:max-w-lg">
+            <div className="flex flex-col h-full">
+              {/* Header */}
+              <div className="px-4 py-3 border-b flex items-center justify-between">
+                <div className="font-semibold">Instrucciones</div>
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" onClick={() => speakAll(steps)}>▶️</Button>
+                  <Button size="sm" variant="outline" onClick={speakPause}>{ttsPlaying ? "⏸️" : "⏯️"}</Button>
+                  <Button size="sm" variant="outline" onClick={() => { setStepsOpen(false); speakReset(); }}>
+                    <X className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+
+              {/* Lista de pasos */}
+              <div className="flex-1 overflow-y-auto px-4 py-3">
+                <ol className="list-decimal pl-5 space-y-2 text-sm">
+                  {steps.map((s, i) => (<li key={i}>{s}</li>))}
+                </ol>
+              </div>
+            </div>
+          </DialogContent>
+        </DialogPortal>
+      </Dialog>
+
+      {/* Botón flotante “Ver pasos” */}
+      {routeActive && steps.length > 0 && !stepsOpen && (
+        <div className="absolute bottom-4 right-4 z-[1200]">
+          <Button size="lg" onClick={() => setStepsOpen(true)}>Ver pasos</Button>
+        </div>
       )}
 
       {/* Botón flotante “Nueva ruta” en móvil */}
@@ -1221,12 +1321,12 @@ export default function PublicNavigator() {
         </div>
       )}
 
-      {/* Modal chat/búsqueda */}
+      {/* Modal chat/búsqueda (se mantiene para atajo "/") */}
       <Dialog open={chatOpen} onOpenChange={setChatOpen}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>{routeActive ? "Buscar otro destino" : "Te ayudo a llegar"}</DialogTitle>
-            <DialogDescription>Escribe “Bloque R”, “Aula 201”, “Cómo llego a Dirección de TICs” o “plazoleta central”.</DialogDescription>
+            <DialogDescription>Escribe “Bloque CRAI”, “Aula 201”, “Cómo llego a Dirección de TICs” o “plazoleta central”. También puedes pegar un enlace con <code>?lat</code> y <code>?lng</code>.</DialogDescription>
           </DialogHeader>
 
           <div className="border rounded-md p-3 max-h-72 overflow-y-auto space-y-2">
@@ -1244,10 +1344,43 @@ export default function PublicNavigator() {
               ref={chatInputRef}
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
-              placeholder='Ej: "Bloque R", "Aula 201" o "plazoleta central"'
+              placeholder='Ej: "Bloque CRAI", "Aula 201" o "plazoleta central"'
             />
             <Button type="submit"><Send className="w-4 h-4 mr-2" />Enviar</Button>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Diálogo de resultados múltiples */}
+      <Dialog open={resultsOpen} onOpenChange={setResultsOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Selecciona tu destino</DialogTitle>
+            <DialogDescription>Encontré varias coincidencias para tu búsqueda.</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-2 max-h-80 overflow-y-auto">
+            {resultHits.map((hit, idx) => (
+              <button
+                key={idx}
+                onClick={() => resolveHit(hit)}
+                className="w-full text-left border rounded-md p-2 hover:bg-accent hover:text-accent-foreground transition"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="font-medium text-sm">
+                    {hit.label}
+                    {"room" in hit && hit.room.room_number ? ` · ${hit.room.room_number}` : ""}
+                  </div>
+                  <Badge variant={hit.kind === "room" ? "default" : "outline"}>
+                    {hit.kind === "room" ? "Espacio" : hit.kind === "building" ? "Bloque" : "Referencia"}
+                  </Badge>
+                </div>
+                {"sub" in hit && hit.sub && (
+                  <div className="text-xs text-muted-foreground mt-1 line-clamp-2">{hit.sub}</div>
+                )}
+              </button>
+            ))}
+          </div>
         </DialogContent>
       </Dialog>
     </div>
