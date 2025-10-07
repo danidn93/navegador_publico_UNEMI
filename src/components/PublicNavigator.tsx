@@ -1609,7 +1609,6 @@ export default function PublicNavigator() {
                   </Button>
                   <Button
                     size="sm"
-                    variant="outline"
                     onClick={() => {
                       setStepsOpen(false);
                       speakReset();
