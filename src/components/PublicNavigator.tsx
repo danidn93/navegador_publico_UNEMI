@@ -1119,28 +1119,30 @@ export default function PublicNavigator() {
   useEffect(() => {
     if (!routeActive || !userLoc || !triggerPtsRef.current.length) return;
 
-    // Umbral de “llegada” a intersección (en metros)
-    const NEAR_M = 18;
+    const NEAR_M = 18; // umbral de llegada a la intersección (metros)
 
-    const idx = Math.min(
+    // Índice del punto de giro que estás por alcanzar
+    const idxAt = Math.min(
       Math.max(spokenStepIdxRef.current + 1, 0),
       triggerPtsRef.current.length - 1
     );
-    const target = triggerPtsRef.current[idx];
+
+    const target = triggerPtsRef.current[idxAt];
     const d = L.latLng(userLoc.lat, userLoc.lng).distanceTo(target);
 
     if (d <= NEAR_M) {
-      // Evita repetir demasiado seguido
       const now = Date.now();
       if (now - lastSpeakTsRef.current > 2500) {
-        // Anuncia el paso idx si existe en steps
-        if (idx >= 0 && idx < steps.length) {
-          speakAll([steps[idx]]);
+        // ✅ Anunciar el PASO SIGUIENTE al que estás alcanzando
+        const announceIdx = Math.min(idxAt + 1, steps.length - 1);
+
+        if (announceIdx >= 0 && announceIdx < steps.length) {
+          speakAll([steps[announceIdx]]);
           lastSpeakTsRef.current = now;
 
-          // Avanza punteros (para que el modal muestre siempre los siguientes)
-          spokenStepIdxRef.current = idx;
-          setNextStepPointer(idx + 1);
+          // Avanzar punteros con base en el paso ANUNCIADO (el siguiente)
+          spokenStepIdxRef.current = announceIdx;
+          setNextStepPointer(announceIdx + 1);
         }
       }
     }
