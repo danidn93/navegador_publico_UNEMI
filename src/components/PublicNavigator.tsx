@@ -161,6 +161,23 @@ const CATEGORY_WORDS = [
   "corredor",
 ];
 
+// Términos que obligan a elegir el más cercano automáticamente
+const NEAREST_TERMS = [
+  // baños
+  "baño","baños","banio","banios","sanitario","sanitarios","servicio higienico","servicios higienicos",
+  "wc","toilet",
+  // bar / cafetería
+  "bar","cafeteria","cafetería","café",
+  // tienda / kiosko
+  "tienda","kiosco","kiosko","bazar","minimarket"
+];
+
+const queryAsksNearest = (q: string) => {
+  const s = norm(q);
+  return NEAREST_TERMS.some(t => s.includes(norm(t)));
+};
+
+
 type ChatMsg = { role: "assistant" | "user"; text: string };
 
 const haversine = (a: L.LatLngExpression, b: L.LatLngExpression) =>
@@ -295,10 +312,12 @@ async function copyToClipboard(text: string) {
 }
 
 /** === Tipos/estado para resultados múltiples === */
+type SearchHitBase = { label: string; sub?: string; distanceMeters?: number };
 type SearchHit =
-  | { kind: "room"; room: Room; label: string; sub?: string }
-  | { kind: "building"; building: Building; label: string; sub?: string }
-  | { kind: "landmark"; landmark: Landmark; label: string; sub?: string };
+  | ({ kind: "room"; room: Room } & SearchHitBase)
+  | ({ kind: "building"; building: Building } & SearchHitBase)
+  | ({ kind: "landmark"; landmark: Landmark } & SearchHitBase);
+
 
 export default function PublicNavigator() {
   // ======= Estado base
@@ -703,6 +722,15 @@ export default function PublicNavigator() {
     });
   };
 
+  const makeRoomHit = (r: Room): SearchHit =>
+    ({ kind: "room" as const, room: r, label: r.name, sub: r.description ?? undefined });
+
+  const makeLandmarkHit = (l: Landmark): SearchHit =>
+    ({ kind: "landmark" as const, landmark: l, label: l.name ?? l.type });
+
+  const makeBuildingHit = (b: Building): SearchHit =>
+    ({ kind: "building" as const, building: b, label: b.name });
+
   // ======= Búsqueda unificada con lista de resultados (rooms > landmarks > buildings)
   const handleSearch = async (e?: React.FormEvent, custom?: string) => {
     e?.preventDefault();
@@ -725,40 +753,34 @@ export default function PublicNavigator() {
     // 3) Landmarks
     const lList = await findLandmarksMany(term);
 
-    // Prioridad: rooms > landmarks > buildings
-    const hits: SearchHit[] = [
-      ...rList.map(
-        (r) =>
-          ({
-            kind: "room",
-            room: r,
-            label: `${r.name}`,
-            sub: r.description || undefined,
-          }) as SearchHit
-      ),
-      ...lList.map(
-        (l) =>
-          ({
-            kind: "landmark",
-            landmark: l,
-            label: l.name ?? l.type,
-          }) as SearchHit
-      ),
-      ...bList.map(
-        (b) =>
-          ({
-            kind: "building",
-            building: b,
-            label: b.name,
-          }) as SearchHit
-      ),
+    // Prioridad: rooms > landmarks > buildings (luego ordenaremos por distancia si aplica)
+    let hits: SearchHit[] = [
+      ...rList.map(makeRoomHit),
+      ...lList.map(makeLandmarkHit),
+      ...bList.map(makeBuildingHit),
     ];
+
 
     if (hits.length === 0) {
       toast.error("Sin resultados");
-      pushAssistant(
-        'No encontré resultados. Prueba “Bloque CRAI”, “Aula 201”, “Secretaría General” o “plazoleta principal”.'
-      );
+      pushAssistant('No encontré resultados. Prueba “Bloque CRAI”, “Aula 201”, “Secretaría General” o “plazoleta principal”.');
+      return;
+    }
+
+    // Enriquecer con distancia si hay GPS y ordenar por distancia
+    hits = await enrichHitsWithDistance(hits, userLoc);
+    const haveDistances = hits.some(h => typeof h.distanceMeters === "number");
+    if (haveDistances) {
+      hits.sort((a, b) => {
+        const da = a.distanceMeters ?? Number.POSITIVE_INFINITY;
+        const db = b.distanceMeters ?? Number.POSITIVE_INFINITY;
+        return da - db;
+      });
+    }
+
+    // Si la consulta pide explícitamente "lo más cercano" (baños/bar/tienda), auto-ir al primero
+    if (queryAsksNearest(q) && haveDistances) {
+      await resolveHit(hits[0]); // el más cercano
       return;
     }
 
@@ -776,7 +798,7 @@ export default function PublicNavigator() {
       return;
     }
 
-    // varios resultados → mostrar diálogo (modal encima del mapa)
+    // varios resultados → mostrar diálogo
     setResultHits(hits);
     setResultsOpen(true);
   };
@@ -993,6 +1015,50 @@ export default function PublicNavigator() {
     });
     const [lng, lat] = best.location.coordinates;
     return L.latLng(lat, lng);
+  };
+
+  // === Helpers para distancia en resultados ===
+  const getLatLngOfHit = async (hit: SearchHit): Promise<L.LatLng | null> => {
+    if (hit.kind === "building") {
+      return L.latLng(hit.building.latitude, hit.building.longitude);
+    }
+    if (hit.kind === "landmark") {
+      const [lng, lat] = hit.landmark.location.coordinates;
+      return L.latLng(lat, lng);
+    }
+    if (hit.kind === "room") {
+      // 1) obtener building_id desde la floor del room
+      const { data: floorRow, error: fErr } = await supabase
+        .from("floors")
+        .select("id, building_id")
+        .eq("id", hit.room.floor_id)
+        .single();
+      if (fErr || !floorRow) return null;
+
+      // 2) coordenadas del building
+      const { data: bRow, error: bErr } = await supabase
+        .from("buildings")
+        .select("id, latitude, longitude")
+        .eq("id", floorRow.building_id)
+        .single();
+      if (bErr || !bRow) return null;
+
+      return L.latLng(bRow.latitude, bRow.longitude);
+    }
+    return null;
+  };
+
+  // Enriquecer todos los hits con distancia al usuario (si hay GPS)
+  const enrichHitsWithDistance = async (hits: SearchHit[], user: {lat:number; lng:number} | null) => {
+    if (!user) return hits; // sin GPS, no calculamos
+    const u = L.latLng(user.lat, user.lng);
+    const out: SearchHit[] = [];
+    for (const h of hits) {
+      const ll = await getLatLngOfHit(h);
+      const d = ll ? Math.round(u.distanceTo(ll)) : undefined;
+      out.push({ ...h, distanceMeters: d });
+    }
+    return out;
   };
 
   const clearRouteLayers = () => {
@@ -1709,15 +1775,16 @@ export default function PublicNavigator() {
                 <div className="flex items-center justify-between">
                   <div className="font-medium text-sm">
                     {hit.label}
-                    {"room" in hit}
                   </div>
-                  <Badge variant={hit.kind === "room" ? "default" : "outline"}>
-                    {hit.kind === "room"
-                      ? "Sala"
-                      : hit.kind === "building"
-                      ? "Bloque"
-                      : "Referencia"}
-                  </Badge>
+
+                  <div className="flex items-center gap-2">
+                    {typeof hit.distanceMeters === "number" && (
+                      <span className="text-xs text-muted-foreground">{hit.distanceMeters} m</span>
+                    )}
+                    <Badge variant={hit.kind === "room" ? "default" : "outline"}>
+                      {hit.kind === "room" ? "Sala" : hit.kind === "building" ? "Bloque" : "Referencia"}
+                    </Badge>
+                  </div>
                 </div>
                 {"sub" in hit && (hit as any).sub && (
                   <div className="text-xs text-muted-foreground mt-1 line-clamp-2">
