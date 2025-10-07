@@ -44,8 +44,10 @@ const norm = (s: string) =>
 const tokenize = (s: string) =>
   norm(s)
     .split(/\s+/)
-    .map((t) => t.replace(/[^\p{L}\p{N}]/gu, ""))
-    .filter((t) => t.length >= 2);
+    .map(t => t.replace(/[^\p{L}\p{N}]/gu, ""))
+    // ✅ Mantener números aunque sean de 1 dígito (ej: "1")
+    .filter(t => t.length >= 2 || /^\d+$/.test(t));
+
 
 // ¿El texto contiene TODOS los tokens (comparando todo sin signos)?
 const matchAllTokens = (haystack: string, tokens: string[]) => {
@@ -84,7 +86,9 @@ const normAlnum = (s: string) =>
   norm(s).replace(/[^\p{L}\p{N}]/gu, "");
 
 const strongTokensOf = (tokens: string[]) =>
-  tokens.filter((t) => !STOPWORDS_ES.has(t) && t.length >= 3);
+  tokens.filter(t =>
+    !STOPWORDS_ES.has(t) && (t.length >= 3 || /^\d+$/.test(t))
+  );
 
 type BuildingState = "HABILITADO" | "REPARACIÓN";
 type Building = {
@@ -629,9 +633,14 @@ export default function PublicNavigator() {
       return [];
     }
 
-    // Filtro final:
-    // - Si hay strongTokens: exigir TODOS los strongTokens
-    // - Si no hay strongTokens: exigir que contenga AL MENOS un token (queries muy genéricas)
+    const baseTokens = (strong.length > 0 ? strong : tokens);
+
+    // ⚠️ Si no hay tokens (caso "Aula 1" → sólo "1" y se perdió), NO filtres nada.
+    if (baseTokens.length === 0) {
+      return (data || []) as Room[];
+    }
+
+    // Filtro estricto
     const filteredStrict = (data || []).filter((r: any) => {
       const bag = [
         r.name ?? "",
@@ -640,22 +649,24 @@ export default function PublicNavigator() {
         ...(r.keywords ?? []),
         ...(r.actividades ?? []),
       ].join(" ");
-      return strong.length > 0 ? matchAllTokens(bag, strong) : matchAnyToken(bag, tokens);
+      return strong.length > 0
+        ? matchAllTokens(bag, strong)
+        : matchAnyToken(bag, tokens);
     }) as Room[];
 
+    // Fallback relajado si no hubo match estricto
     const filtered = filteredStrict.length > 0
-    ? filteredStrict
-    : ((data || []).filter((r: any) => {
-        const bag = [
-          r.name ?? "",
-          r.room_number ?? "",
-          r.description ?? "",
-          ...(r.keywords ?? []),
-          ...(r.actividades ?? []),
-        ].join(" ");
-        const base = strong.length > 0 ? strong : tokens;
-        return matchAnyToken(bag, base);
-      }) as Room[]);
+      ? filteredStrict
+      : ((data || []).filter((r: any) => {
+          const bag = [
+            r.name ?? "",
+            r.room_number ?? "",
+            r.description ?? "",
+            ...(r.keywords ?? []),
+            ...(r.actividades ?? []),
+          ].join(" ");
+          return matchAnyToken(bag, baseTokens);
+        }) as Room[]);
 
     // Priorización por categoría (si aplica)
     if (category && !["bloque", "referencia", "plazoleta", "bar", "corredor"].includes(category)) {
@@ -721,7 +732,7 @@ export default function PublicNavigator() {
           ({
             kind: "room",
             room: r,
-            label: `${r.name}${r.room_number ? ` · ${r.room_number}` : ""}`,
+            label: `${r.name}`,
             sub: r.description || undefined,
           }) as SearchHit
       ),
@@ -1697,11 +1708,11 @@ export default function PublicNavigator() {
                 <div className="flex items-center justify-between">
                   <div className="font-medium text-sm">
                     {hit.label}
-                    {"room" in hit && hit.room.room_number ? ` · ${hit.room.room_number}` : ""}
+                    {"room" in hit}
                   </div>
                   <Badge variant={hit.kind === "room" ? "default" : "outline"}>
                     {hit.kind === "room"
-                      ? "Espacio"
+                      ? "Sala"
                       : hit.kind === "building"
                       ? "Bloque"
                       : "Referencia"}
