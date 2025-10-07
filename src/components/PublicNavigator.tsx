@@ -5,10 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "leaflet-routing-machine/dist/leaflet-routing-machine.css";
-import {
-  DialogPortal, DialogOverlay
-} from "@/components/ui/dialog";
-
+import { DialogPortal, DialogOverlay } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -44,37 +41,50 @@ const norm = (s: string) =>
     .replace(/[\u0300-\u036f]/g, "")
     .trim();
 
-// Stopwords básicas en ES (normalizadas sin tildes)
-const STOPWORDS_ES = new Set([
-  "a","al","del","de","la","las","el","los","un","una","unos","unas",
-  "y","o","u","que","como","donde","donde","cuando","cuanto","cual",
-  "cuales","por","para","en","con","sin","sobre","entre","hasta","desde",
-  "puedo","puedes","puede","quiero","quieres","quiere","pedir","pido",
-  "me","mi","mis","su","sus","tu","tus","lo","le","les","se"
-]);
-
-// Extrae tokens "fuertes": no stopword y longitud >= 3
-const strongTokensOf = (tokens: string[]) =>
-  tokens.filter(t => !STOPWORDS_ES.has(t) && t.length >= 3);
-
-// ¿Hay al menos un token?
-const matchAnyToken = (haystack: string, tokens: string[]) => {
-  const H = norm(haystack);
-  return tokens.some(t => H.includes(t));
-};
-
-// Divide la consulta en tokens útiles (2+ chars), sin tildes ni símbolos
 const tokenize = (s: string) =>
   norm(s)
     .split(/\s+/)
-    .map(t => t.replace(/[^\p{L}\p{N}]/gu, ""))
-    .filter(t => t.length >= 2);
+    .map((t) => t.replace(/[^\p{L}\p{N}]/gu, ""))
+    .filter((t) => t.length >= 2);
 
-// ¿El texto contiene TODOS los tokens (parciales)?
+// ¿El texto contiene TODOS los tokens (comparando todo sin signos)?
 const matchAllTokens = (haystack: string, tokens: string[]) => {
-  const H = norm(haystack);
+  const H = normAlnum(haystack);
   return tokens.every(t => H.includes(t));
 };
+
+// ¿El texto contiene ALGUNO de los tokens?
+const matchAnyToken = (haystack: string, tokens: string[]) => {
+  const H = normAlnum(haystack);
+  return tokens.some(t => H.includes(t));
+};
+
+// --- Stopwords + tokens fuertes (para evitar falsos positivos tipo “un” -> BIOUNEMI)
+const STOPWORDS_ES = new Set([
+  "a","al","del","de","la","las","el","los","un","una","unos","unas",
+  "y","o","u","que","como","donde","cuando","cuanto","cual","cuales",
+  "por","para","en","con","sin","sobre","entre","hasta","desde",
+  "puedo","puedes","puede","quiero","quieres","quiere","pedir","pido",
+  "me","mi","mis","su","sus","tu","tus","lo","le","les","se",
+  "queda","quedo","quedan","quedó","quedar","quedara","quedará","quedaria","quedaría",
+  "ir","voy","vas","va","vamos","van","llegar","llego","llegas","llega","llegamos","llegan",
+  "llevar","llevo","llevas","lleva","llevamos","llevan",
+  "aqui","aquí","alli","allí","aca","acá","ahi","ahí",
+  "edificio","bloque","aula","laboratorio","taller","oficina","facultad","departamento",
+  "referencia","plazoleta","bar","corredor","otro",
+  "examen","exámenes","examenes","exámen","exámenes",
+  "dar","doy","das","da","damos","dan",
+  "hacer","hago","haces","hace","hacemos","hacen",
+  "tomar","tomo","tomas","toma","tomamos","toman",
+  "rendir","rindo","rindes","rinde","rendimos","rinden",
+  "examen","exámen","evaluacion","evaluación","prueba","test","ehep"
+]);
+
+const normAlnum = (s: string) =>
+  norm(s).replace(/[^\p{L}\p{N}]/gu, "");
+
+const strongTokensOf = (tokens: string[]) =>
+  tokens.filter((t) => !STOPWORDS_ES.has(t) && t.length >= 3);
 
 type BuildingState = "HABILITADO" | "REPARACIÓN";
 type Building = {
@@ -156,7 +166,6 @@ const keyOf = (lat: number, lng: number) => `${lat.toFixed(6)},${lng.toFixed(6)}
 
 type NodeId = string;
 type Node = { id: NodeId; lat: number; lng: number; edges: { to: NodeId; w: number }[] };
-
 type Segment = { a: L.LatLng; b: L.LatLng; aId: NodeId; bId: NodeId };
 
 function projectPointToSegment(P: L.LatLng, A: L.LatLng, B: L.LatLng) {
@@ -187,7 +196,7 @@ const nearestProjection = (p: L.LatLng, segments: Segment[]) => {
 function cloneGraph(G: Map<NodeId, Node>) {
   const G2 = new Map<NodeId, Node>();
   for (const [id, n] of G.entries()) {
-    G2.set(id, { id, lat: n.lat, lng: n.lng, edges: n.edges.map(e => ({ ...e })) });
+    G2.set(id, { id, lat: n.lat, lng: n.lng, edges: n.edges.map((e) => ({ ...e })) });
   }
   return G2;
 }
@@ -204,21 +213,26 @@ function integrateProjection(
   }
   const add = (from: NodeId, to: NodeId, w: number) => {
     const n = G.get(from)!;
-    if (!n.edges.some(e => e.to === to)) n.edges.push({ to, w });
+    if (!n.edges.some((e) => e.to === to)) n.edges.push({ to, w });
   };
   const dQA = proj.Q.distanceTo(seg.a);
   const dQB = proj.Q.distanceTo(seg.b);
-  add(Qid, seg.aId, dQA); add(seg.aId, Qid, dQA);
-  add(Qid, seg.bId, dQB); add(seg.bId, Qid, dQB);
+  add(Qid, seg.aId, dQA);
+  add(seg.aId, Qid, dQA);
+  add(Qid, seg.bId, dQB);
+  add(seg.bId, Qid, dQB);
   return Qid;
 }
 
 function turnDirection(prev: L.LatLng, cur: L.LatLng, next: L.LatLng) {
-  const v1x = cur.lng - prev.lng, v1y = cur.lat - prev.lat;
-  const v2x = next.lng - cur.lng, v2y = next.lat - cur.lat;
+  const v1x = cur.lng - prev.lng,
+    v1y = cur.lat - prev.lat;
+  const v2x = next.lng - cur.lng,
+    v2y = next.lat - cur.lat;
   const cross = v1x * v2y - v1y * v2x;
   const dot = v1x * v2x + v1y * v2y;
-  const mag1 = Math.hypot(v1x, v1y), mag2 = Math.hypot(v2x, v2y);
+  const mag1 = Math.hypot(v1x, v1y),
+    mag2 = Math.hypot(v2x, v2y);
   const cos = dot / (mag1 * mag2 || 1);
   const angle = Math.acos(Math.max(-1, Math.min(1, cos)));
   if (angle < (15 * Math.PI) / 180) return null;
@@ -234,14 +248,18 @@ function buildTurnByTurn(path: L.LatLng[], destino?: L.LatLng): string[] {
     if (i < path.length - 1) {
       const dir = turnDirection(path[i - 1], path[i], path[i + 1]);
       distAcc += d;
-      if (dir) { steps.push(`En ${Math.round(distAcc)} m, gira a la ${dir}.`); distAcc = 0; }
+      if (dir) {
+        steps.push(`En ${Math.round(distAcc)} m, gira a la ${dir}.`);
+        distAcc = 0;
+      }
     } else {
       distAcc += d;
     }
   }
   if (distAcc > 0) steps.push(`Continúa ${Math.round(distAcc)} m hasta la entrada.`);
   if (destino && path.length >= 2) {
-    const a = path[path.length - 2], b = path[path.length - 1];
+    const a = path[path.length - 2],
+      b = path[path.length - 1];
     const seg = L.latLng(b.lat - a.lat, b.lng - a.lng);
     const toDest = L.latLng(destino.lat - b.lat, destino.lng - b.lng);
     const cross = seg.lng * toDest.lat - seg.lat * toDest.lng;
@@ -251,7 +269,7 @@ function buildTurnByTurn(path: L.LatLng[], destino?: L.LatLng): string[] {
   return steps;
 }
 
-// ---- COMPARTIR UBICACIÓN ----
+// ---- Compartir ubicación ----
 function buildShareUrl(lat: number, lng: number, zoom?: number) {
   const base = `${window.location.origin}${window.location.pathname}`;
   const z = zoom != null ? `&z=${zoom}` : "";
@@ -284,8 +302,7 @@ export default function PublicNavigator() {
   const [userLoc, setUserLoc] = useState<{ lat: number; lng: number } | null>(null);
   const [gpsDenied, setGpsDenied] = useState(false);
 
-  // Seguir GPS activo por defecto
-  const gpsFollow = true;
+  const gpsFollow = true; // sigue el GPS
 
   const [isAdmin, setIsAdmin] = useState(false);
   useEffect(() => {
@@ -307,7 +324,7 @@ export default function PublicNavigator() {
   const graphRef = useRef<Map<NodeId, Node> | null>(null);
   const segmentsRef = useRef<Segment[] | null>(null);
 
-  // Punto compartido (si llega en la URL ?lat&lng)
+  // Punto compartido (?lat&lng)
   const [sharedTarget, setSharedTarget] = useState<L.LatLng | null>(null);
 
   // Mapa
@@ -331,8 +348,6 @@ export default function PublicNavigator() {
   // Guía
   const [steps, setSteps] = useState<string[]>([]);
   const [ttsPlaying, setTtsPlaying] = useState(false);
-
-  // NUEVO: índice del siguiente paso (para que el modal muestre “lo que viene”)
   const [nextStepPointer, setNextStepPointer] = useState(0);
 
   // Navegación responsiva
@@ -342,7 +357,10 @@ export default function PublicNavigator() {
   // Chat
   const [chatOpen, setChatOpen] = useState(false);
   const [chatMsgs, setChatMsgs] = useState<ChatMsg[]>([
-    { role: "assistant", text: "Hola 👋 ¿A qué edificio, espacio o referencia quieres ir? (Ej: “Bloque R”, “Dirección de TICs” o “plazoleta central”)." },
+    {
+      role: "assistant",
+      text: "Hola 👋 ¿A qué edificio, espacio o referencia quieres ir? (Ej: “Bloque R”, “Dirección de TICs” o “plazoleta central”).",
+    },
   ]);
   const [chatInput, setChatInput] = useState("");
   const chatInputRef = useRef<HTMLInputElement | null>(null);
@@ -358,10 +376,12 @@ export default function PublicNavigator() {
     }
   }, [chatOpen]);
 
-  // Atajo para abrir chat rápido
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "/") { e.preventDefault(); setChatOpen(true); }
+      if (e.key === "/") {
+        e.preventDefault();
+        setChatOpen(true);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -423,7 +443,7 @@ export default function PublicNavigator() {
     })();
   }, []);
 
-  // ====== MAP ======
+  // ====== MAP: crear/limpiar ======
   useEffect(() => {
     if (!mapContainer.current || mapRef.current) return;
 
@@ -445,7 +465,10 @@ export default function PublicNavigator() {
       markersRef.current.forEach((m) => mapRef.current?.removeLayer(m));
       if (routingRef.current) mapRef.current.removeControl(routingRef.current);
       if (buildingNoteRef.current) mapRef.current.removeLayer(buildingNoteRef.current);
-      if (routeLayerRef.current) { mapRef.current.removeLayer(routeLayerRef.current); routeLayerRef.current = null; }
+      if (routeLayerRef.current) {
+        mapRef.current.removeLayer(routeLayerRef.current);
+        routeLayerRef.current = null;
+      }
       if (walkerRef.current) mapRef.current.removeLayer(walkerRef.current);
       if (userMarkerRef.current) mapRef.current.removeLayer(userMarkerRef.current);
       mapRef.current.remove();
@@ -454,7 +477,7 @@ export default function PublicNavigator() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Iniciar vista si vienen lat/lng en la URL compartida (y guardar el punto)
+  // URL compartida (?lat & ?lng)
   useEffect(() => {
     if (!mapRef.current) return;
     try {
@@ -472,9 +495,12 @@ export default function PublicNavigator() {
     } catch {}
   }, [mapRef.current]);
 
-  useEffect(() => { addBuildingMarkers(); }, [buildings]); // eslint-disable-line
+  useEffect(() => {
+    addBuildingMarkers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [buildings]);
 
-  // marcador de usuario y mascota (siempre sigue el GPS)
+  // marcador de usuario + mascota
   useEffect(() => {
     if (!mapRef.current || !userLoc) return;
 
@@ -489,10 +515,15 @@ export default function PublicNavigator() {
     if (gpsFollow) {
       if (!walkerRef.current) {
         walkerRef.current = L.marker([userLoc.lat, userLoc.lng], {
-          icon: walkerIcon, zIndexOffset: 1000,
+          icon: walkerIcon,
+          zIndexOffset: 1000,
         })
           .addTo(mapRef.current)
-          .bindTooltip("¡Sígueme! 🐯", { permanent: false, direction: "top", offset: [0, -36] });
+          .bindTooltip("¡Sígueme! 🐯", {
+            permanent: false,
+            direction: "top",
+            offset: [0, -36],
+          });
       } else {
         walkerRef.current.setLatLng([userLoc.lat, userLoc.lng]);
       }
@@ -508,20 +539,23 @@ export default function PublicNavigator() {
       const customIcon = L.divIcon({
         className: "custom-building-marker",
         html: `<div class="bg-primary text-primary-foreground rounded-full w-8 h-8 flex items-center justify-center text-sm font-bold shadow-lg border-2 border-background">${b.total_floors}</div>`,
-        iconSize: [32, 32], iconAnchor: [16, 16],
+        iconSize: [32, 32],
+        iconAnchor: [16, 16],
       });
 
-      const marker = L.marker([b.latitude, b.longitude], { icon: customIcon, title: b.name })
-        .addTo(mapRef.current!);
+      const marker = L.marker([b.latitude, b.longitude], {
+        icon: customIcon,
+        title: b.name,
+      }).addTo(mapRef.current!);
       marker.on("click", () => handleSelectBuilding(b, true));
       markersRef.current.push(marker);
     });
   };
-
-  // ====== Búsqueda
+  // ====== Búsqueda (NLP simple)
   const parseIntent = (raw: string) => {
     const s = norm(raw);
-    const re = /como\s+llego\s+(?:al|a\s+la)\s+(bloque|aula|laboratorio|taller|oficina|facultad|departamento|referencia|plazoleta|bar|corredor)\s+(.+)/i;
+    const re =
+      /como\s+llego\s+(?:al|a\s+la)\s+(bloque|aula|laboratorio|taller|oficina|facultad|departamento|referencia|plazoleta|bar|corredor)\s+(.+)/i;
     const m = s.match(re);
     if (m) return { category: m[1], term: m[2].trim() };
     for (const cat of CATEGORY_WORDS) {
@@ -531,38 +565,38 @@ export default function PublicNavigator() {
     return { category: null as string | null, term: s };
   };
 
-  // ==== Buildings: coincidencias parciales por tokens (name/building_code), insensible a tildes ====
+  // ==== Buildings con strongTokens (evita falsos positivos tipo "un" -> BIOUNEMI)
   const findBuilding = (termRaw: string): Building[] => {
     let t = norm(termRaw).replace(/^bloque\s+/, "");
     const tokens = tokenize(t);
     const strong = strongTokensOf(tokens);
 
     if (strong.length === 0) {
-      // Sin tokens fuertes no intentamos “relajar” para evitar falsos positivos como "un"
+      // Sin tokens fuertes evitamos “relajar” para no traer coincidencias por subcadenas débiles
       return [];
     }
 
-    // Candidatos: contienen TODOS los strongTokens en name o code
-    const cands = buildings.filter((b) => {
+    // 1) TODOS los strongTokens
+    const strict = buildings.filter((b) => {
       const label = `${b.name} ${b.building_code ?? ""}`;
       return matchAllTokens(label, strong);
     });
+    if (strict.length > 0) return strict;
 
-    if (cands.length > 0) return cands;
-
-    // Relaja: contienen ALGUNO de los strongTokens (pero solo strong, no stopwords)
+    // 2) ALGUNO de los strongTokens (relajado, pero sin stopwords)
     return buildings.filter((b) => {
       const label = `${b.name} ${b.building_code ?? ""}`;
       return matchAnyToken(label, strong);
     });
   };
 
-  // ==== Rooms: OR amplio en SQL + filtro por tokens en cliente (name, room_number, keywords[], actividades[]) ====
+  // ==== Rooms con strongTokens y filtro final robusto
   const findRooms = async (termRaw: string, category: string | null): Promise<Room[]> => {
     const raw = termRaw.trim();
     const tokens = tokenize(raw);
+    const strong = strongTokensOf(tokens);
 
-    const kwArray = `{${tokens.join(",")}}`;
+    const kwArray = `{${(strong.length > 0 ? strong : tokens).join(",")}}`;
 
     const orParts: string[] = [
       `name.ilike.%${raw}%`,
@@ -570,13 +604,13 @@ export default function PublicNavigator() {
     ];
 
     // tokens parciales en name/room_number
-    tokens.forEach(tok => {
+    (strong.length > 0 ? strong : tokens).forEach((tok) => {
       orParts.push(`name.ilike.%${tok}%`);
       orParts.push(`room_number.ilike.%${tok}%`);
     });
 
-    // arrays por overlaps
-    if (tokens.length > 0) {
+    // arrays por overlaps (keywords/actividades)
+    if ((strong.length > 0 ? strong : tokens).length > 0) {
       orParts.push(`keywords.ov.${kwArray}`);
       orParts.push(`actividades.ov.${kwArray}`);
     }
@@ -589,11 +623,16 @@ export default function PublicNavigator() {
       .or(orParts.join(","))
       .limit(200);
 
-    if (error) { console.error(error); toast.error("Error buscando espacios"); return []; }
+    if (error) {
+      console.error(error);
+      toast.error("Error buscando espacios");
+      return [];
+    }
 
-    // Filtro final: exigir TODOS los tokens en algún campo consolidado
-    const strong = strongTokensOf(tokens);
-    const filtered = (data || []).filter((r: any) => {
+    // Filtro final:
+    // - Si hay strongTokens: exigir TODOS los strongTokens
+    // - Si no hay strongTokens: exigir que contenga AL MENOS un token (queries muy genéricas)
+    const filteredStrict = (data || []).filter((r: any) => {
       const bag = [
         r.name ?? "",
         r.room_number ?? "",
@@ -604,8 +643,22 @@ export default function PublicNavigator() {
       return strong.length > 0 ? matchAllTokens(bag, strong) : matchAnyToken(bag, tokens);
     }) as Room[];
 
+    const filtered = filteredStrict.length > 0
+    ? filteredStrict
+    : ((data || []).filter((r: any) => {
+        const bag = [
+          r.name ?? "",
+          r.room_number ?? "",
+          r.description ?? "",
+          ...(r.keywords ?? []),
+          ...(r.actividades ?? []),
+        ].join(" ");
+        const base = strong.length > 0 ? strong : tokens;
+        return matchAnyToken(bag, base);
+      }) as Room[]);
+
     // Priorización por categoría (si aplica)
-    if (category && !["bloque","referencia","plazoleta","bar","corredor"].includes(category)) {
+    if (category && !["bloque", "referencia", "plazoleta", "bar", "corredor"].includes(category)) {
       const cat = norm(category);
       filtered.sort((a, b) => {
         const aHit = norm(`${a.name} ${a.room_number ?? ""}`).includes(cat) ? 1 : 0;
@@ -617,26 +670,29 @@ export default function PublicNavigator() {
     return filtered;
   };
 
-  // ==== Landmarks: traer lote y filtrar por tokens (name/type) sin tildes ====
+  // ==== Landmarks por name/type con strongTokens
   const findLandmarksMany = async (termRaw: string): Promise<Landmark[]> => {
     const tokens = tokenize(termRaw);
+    const strong = strongTokensOf(tokens);
 
     const { data, error } = await supabase
       .from("landmarks")
       .select("id,name,type,location")
       .limit(200);
 
-    if (error) { console.error(error); return []; }
+    if (error) {
+      console.error(error);
+      return [];
+    }
 
     const list = (data || []) as Landmark[];
-    const strong = strongTokensOf(tokens);
-    return list.filter(lm => {
+    return list.filter((lm) => {
       const label = `${lm.name ?? ""} ${lm.type}`;
       return strong.length > 0 ? matchAllTokens(label, strong) : matchAnyToken(label, tokens);
     });
   };
 
-  // ======= Búsqueda unificada con lista de resultados =======
+  // ======= Búsqueda unificada con lista de resultados (rooms > landmarks > buildings)
   const handleSearch = async (e?: React.FormEvent, custom?: string) => {
     e?.preventDefault();
     const q = (custom ?? query).trim();
@@ -645,31 +701,62 @@ export default function PublicNavigator() {
     const { category, term } = parseIntent(q);
 
     // 1) Buildings
-    const bList = (!category || category === "bloque") ? findBuilding(term) : [];
+    const bList = !category || category === "bloque" ? findBuilding(term) : [];
 
     // 2) Rooms
     const rList = await findRooms(
       term,
-      category && !["bloque","referencia","plazoleta","bar","corredor"].includes(category) ? category : null
+      category && !["bloque", "referencia", "plazoleta", "bar", "corredor"].includes(category)
+        ? category
+        : null
     );
 
     // 3) Landmarks
     const lList = await findLandmarksMany(term);
 
+    // Prioridad: rooms > landmarks > buildings
     const hits: SearchHit[] = [
-      ...bList.map(b => ({ kind: "building", building: b, label: b.name } as SearchHit)),
-      ...rList.map(r => ({
-        kind: "room",
-        room: r,
-        label: `${r.name}${r.room_number ? ` · ${r.room_number}` : ""}`,
-        sub: r.description || undefined,
-      }) as SearchHit),
-      ...lList.map(l => ({ kind: "landmark", landmark: l, label: l.name ?? l.type } as SearchHit)),
+      ...rList.map(
+        (r) =>
+          ({
+            kind: "room",
+            room: r,
+            label: `${r.name}${r.room_number ? ` · ${r.room_number}` : ""}`,
+            sub: r.description || undefined,
+          }) as SearchHit
+      ),
+      ...lList.map(
+        (l) =>
+          ({
+            kind: "landmark",
+            landmark: l,
+            label: l.name ?? l.type,
+          }) as SearchHit
+      ),
+      ...bList.map(
+        (b) =>
+          ({
+            kind: "building",
+            building: b,
+            label: b.name,
+          }) as SearchHit
+      ),
     ];
 
     if (hits.length === 0) {
       toast.error("Sin resultados");
-      pushAssistant("No encontré resultados. Prueba “Bloque CRAI”, “Aula 201”, “Dirección de TICs” o “plazoleta central”.");
+      pushAssistant(
+        'No encontré resultados. Prueba “Bloque CRAI”, “Aula 201”, “Secretaría General” o “plazoleta principal”.'
+      );
+      return;
+    }
+
+    // Evita autoseleccionar un building por tokens débiles
+    const tokens = tokenize(q);
+    const strong = strongTokensOf(tokens);
+    if (hits.length === 1 && hits[0].kind === "building" && strong.length === 0) {
+      setResultHits(hits);
+      setResultsOpen(true);
       return;
     }
 
@@ -678,7 +765,7 @@ export default function PublicNavigator() {
       return;
     }
 
-    // varios resultados → mostrar diálogo
+    // varios resultados → mostrar diálogo (modal encima del mapa)
     setResultHits(hits);
     setResultsOpen(true);
   };
@@ -705,11 +792,15 @@ export default function PublicNavigator() {
 
   // ====== Select building / rooms
   const handleSelectBuilding = async (b: Building, fit = false) => {
-    setSelectedBuilding(b); setSelectedRoom(null);
+    setSelectedBuilding(b);
+    setSelectedRoom(null);
 
     if (mapRef.current && fit) {
       mapRef.current.setView([b.latitude, b.longitude], 18, { animate: true });
-      L.popup().setLatLng([b.latitude, b.longitude]).setContent(`<b>${b.name}</b>`).openOn(mapRef.current);
+      L.popup()
+        .setLatLng([b.latitude, b.longitude])
+        .setContent(`<b>${b.name}</b>`)
+        .openOn(mapRef.current);
     }
     await loadFloorsAndRooms(b.id);
   };
@@ -725,11 +816,16 @@ export default function PublicNavigator() {
       setBuildingFloors((floors || []) as Floor[]);
 
       const floorIds = (floors || []).map((f) => f.id);
-      if (floorIds.length === 0) { setBuildingRooms([]); return; }
+      if (floorIds.length === 0) {
+        setBuildingRooms([]);
+        return;
+      }
 
       const { data: rooms, error: roomsErr } = await supabase
         .from("rooms")
-        .select("id,floor_id,name,room_number,description,directions,room_type_id,capacity,equipment,keywords,actividades")
+        .select(
+          "id,floor_id,name,room_number,description,directions,room_type_id,capacity,equipment,keywords,actividades"
+        )
         .in("floor_id", floorIds)
         .order("name", { ascending: true });
       if (roomsErr) throw roomsErr;
@@ -744,10 +840,13 @@ export default function PublicNavigator() {
       })) as Room[];
 
       setBuildingRooms(enhanced);
-    } catch (e) { console.error(e); toast.error("Error cargando pisos/rooms"); }
+    } catch (e) {
+      console.error(e);
+      toast.error("Error cargando pisos/rooms");
+    }
   };
 
-  // ====== Grafo Footways
+  // ====== Grafo Footways (ruteo peatonal interno)
   const buildGraphAndSegments = (foot: Footway[]) => {
     const G = new Map<NodeId, Node>();
     const segs: Segment[] = [];
@@ -771,7 +870,8 @@ export default function PublicNavigator() {
         a.edges.push({ to: id2, w });
         b.edges.push({ to: id1, w });
 
-        G.set(id1, a); G.set(id2, b);
+        G.set(id1, a);
+        G.set(id2, b);
         segs.push({ a: L.latLng(lat1, lng1), b: L.latLng(lat2, lng2), aId: id1, bId: id2 });
       }
     }
@@ -781,14 +881,16 @@ export default function PublicNavigator() {
   const ensureGraphWithSegments = () => {
     if (!graphRef.current || !segmentsRef.current) {
       const { G, segs } = buildGraphAndSegments(footways);
-      graphRef.current = G; segmentsRef.current = segs;
+      graphRef.current = G;
+      segmentsRef.current = segs;
     }
-    return { G: graphRef.current!, segments: graphRef.current ? segmentsRef.current! : [] };
+    return { G: graphRef.current!, segments: segmentsRef.current! };
   };
 
   const astar = (G: Map<NodeId, Node>, start: NodeId, goal: NodeId): NodeId[] | null => {
     const h = (a: NodeId, b: NodeId) => {
-      const A = G.get(a)!, B = G.get(b)!;
+      const A = G.get(a)!,
+        B = G.get(b)!;
       return L.latLng(A.lat, A.lng).distanceTo([B.lat, B.lng]);
     };
     const open = new Set<NodeId>([start]);
@@ -796,18 +898,34 @@ export default function PublicNavigator() {
     const g = new Map<NodeId, number>([[start, 0]]);
     const f = new Map<NodeId, number>([[start, h(start, goal)]]);
     const pop = () => {
-      let best: NodeId | null = null, bestF = Infinity;
-      for (const id of open) { const curF = f.get(id) ?? Infinity; if (curF < bestF) { bestF = curF; best = id; } }
-      if (best) open.delete(best); return best;
+      let best: NodeId | null = null,
+        bestF = Infinity;
+      for (const id of open) {
+        const curF = f.get(id) ?? Infinity;
+        if (curF < bestF) {
+          bestF = curF;
+          best = id;
+        }
+      }
+      if (best) open.delete(best);
+      return best;
     };
     while (open.size) {
-      const cur = pop()!; if (cur === goal) {
-        const path: NodeId[] = [cur]; while (came.has(path[0])) path.unshift(came.get(path[0])!); return path;
+      const cur = pop()!;
+      if (cur === goal) {
+        const path: NodeId[] = [cur];
+        while (came.has(path[0])) path.unshift(came.get(path[0])!);
+        return path;
       }
       const curG = g.get(cur) ?? Infinity;
       for (const e of G.get(cur)!.edges) {
         const ng = curG + e.w;
-        if (ng < (g.get(e.to) ?? Infinity)) { came.set(e.to, cur); g.set(e.to, ng); f.set(e.to, ng + h(e.to, goal)); open.add(e.to); }
+        if (ng < (g.get(e.to) ?? Infinity)) {
+          came.set(e.to, cur);
+          g.set(e.to, ng);
+          f.set(e.to, ng + h(e.to, goal));
+          open.add(e.to);
+        }
       }
     }
     return null;
@@ -820,17 +938,17 @@ export default function PublicNavigator() {
 
     const SNAP_MAX = 500;
     const projFrom = nearestProjection(fromLL, segments);
-    const projTo   = nearestProjection(toLL, segments);
+    const projTo = nearestProjection(toLL, segments);
     if (projFrom.dist > SNAP_MAX || projTo.dist > SNAP_MAX) return null;
 
     const G = cloneGraph(baseG);
     const fromId = integrateProjection(G, segments, projFrom);
-    const toId   = integrateProjection(G, segments, projTo);
+    const toId = integrateProjection(G, segments, projTo);
 
     const ids = astar(G, fromId, toId);
     if (!ids) return null;
 
-    return ids.map(id => {
+    return ids.map((id) => {
       const n = G.get(id)!;
       return L.latLng(n.lat, n.lng);
     });
@@ -857,7 +975,10 @@ export default function PublicNavigator() {
     list.forEach((e) => {
       const [lng, lat] = e.location.coordinates;
       const d = fromLL.distanceTo([lat, lng]);
-      if (d < bestD) { bestD = d; best = e; }
+      if (d < bestD) {
+        bestD = d;
+        best = e;
+      }
     });
     const [lng, lat] = best.location.coordinates;
     return L.latLng(lat, lng);
@@ -877,13 +998,11 @@ export default function PublicNavigator() {
       mapRef.current.removeLayer(buildingNoteRef.current);
       buildingNoteRef.current = null;
     }
-    setSteps([]); // limpia guía
-    setTurnTriggers([]); // reset disparadores
-    setNextStepPointer(0); // reset puntero
+    setSteps([]);
+    setNextStepPointer(0);
     setRouteActive(false);
     setStepsOpen(false);
   };
-
   const focusRoom = async (room: Room) => {
     try {
       const { data: floor, error: fErr } = await supabase
@@ -895,17 +1014,22 @@ export default function PublicNavigator() {
 
       const { data: building, error: bErr } = await supabase
         .from("buildings")
-        .select("id,name,description,latitude,longitude,total_floors,building_code,state")
+        .select(
+          "id,name,description,latitude,longitude,total_floors,building_code,state"
+        )
         .eq("id", floor.building_id)
         .eq("state", "HABILITADO")
         .single();
-      if (bErr || !building) { toast.error("El edificio no está habilitado."); return; }
+      if (bErr || !building) {
+        toast.error("El edificio no está habilitado.");
+        return;
+      }
 
       await handleSelectBuilding(building as Building, true);
 
       const roomWithFloor: Room = {
         ...room,
-        floor: { id: floor.id, floor_number: (floor as any).floor_number }
+        floor: { id: floor.id, floor_number: (floor as any).floor_number },
       };
       setSelectedRoom(roomWithFloor);
 
@@ -916,7 +1040,10 @@ export default function PublicNavigator() {
       const from = L.latLng(userLoc.lat, userLoc.lng);
       const to = bestEntranceForBuilding((building as Building).id, from);
       await drawFootRoute(from, to, roomWithFloor);
-    } catch (e) { console.error(e); toast.error("No se pudo focalizar el espacio"); }
+    } catch (e) {
+      console.error(e);
+      toast.error("No se pudo focalizar el espacio");
+    }
   };
 
   const focusLandmark = async (lm: Landmark) => {
@@ -928,12 +1055,18 @@ export default function PublicNavigator() {
       clearRouteLayers();
       toast.error("Activa el GPS para trazar la ruta a la referencia.");
       mapRef.current.setView(ll, 18, { animate: true });
-      L.popup().setLatLng(ll).setContent(`<b>${lm.name ?? lm.type}</b>`).openOn(mapRef.current);
+      L.popup()
+        .setLatLng(ll)
+        .setContent(`<b>${lm.name ?? lm.type}</b>`)
+        .openOn(mapRef.current);
       return;
     }
     await drawFootRoute(L.latLng(userLoc.lat, userLoc.lng), ll);
     mapRef.current.setView(ll, 18, { animate: true });
-    L.popup().setLatLng(ll).setContent(`<b>${lm.name ?? lm.type}</b>`).openOn(mapRef.current);
+    L.popup()
+      .setLatLng(ll)
+      .setContent(`<b>${lm.name ?? lm.type}</b>`)
+      .openOn(mapRef.current);
   };
 
   const ensureRoutingLib = async () => {
@@ -941,7 +1074,7 @@ export default function PublicNavigator() {
     await import("leaflet-routing-machine");
   };
 
-  // Anexa información de piso/directions al final de pasos
+  // Anexa piso/directions al final de pasos
   const appendRoomInfoToSteps = (base: string[], room?: Room) => {
     const out = [...base];
     if (room?.floor?.floor_number != null) {
@@ -952,64 +1085,94 @@ export default function PublicNavigator() {
     return out;
   };
 
-  // ===== NUEVO: Turn triggers para anunciar el siguiente paso por voz =====
-  const [turnTriggers, setTurnTriggers] = useState<
-    { lat: number; lng: number; stepIndex: number; fired: boolean }[]
-  >([]);
+  // ====== Gestión de ruta + anuncios por intersecciones ======
+  const routePathRef = useRef<L.LatLng[] | null>(null);
+  const triggerPtsRef = useRef<L.LatLng[]>([]);
+  const spokenStepIdxRef = useRef<number>(-1);
+  const lastSpeakTsRef = useRef<number>(0);
 
-  function computeTurnTriggers(path: L.LatLng[], stepsText: string[]) {
-    const triggers: { lat: number; lng: number; stepIndex: number; fired: boolean }[] = [];
-    // correlaciona cada giro geométrico con un índice de paso
-    // (solo los pasos de giro y tramos, no los anexados de piso/directions)
-    let stepIdx = 0;
+  // Detecta puntos de giro (donde hay cambio de dirección notable) + final
+  function computeTurnPoints(path: L.LatLng[]): L.LatLng[] {
+    const pts: L.LatLng[] = [];
+    if (path.length < 2) return pts;
     for (let i = 1; i < path.length - 1; i++) {
       const dir = turnDirection(path[i - 1], path[i], path[i + 1]);
-      if (dir) {
-        if (stepIdx < stepsText.length) {
-          triggers.push({ lat: path[i].lat, lng: path[i].lng, stepIndex: stepIdx, fired: false });
-        }
-        stepIdx++;
-      }
+      if (dir) pts.push(path[i]);
     }
-    // el último “Continúa … hasta la entrada” probablemente quede como paso sin trigger de giro
-    return triggers;
+    // Punto final
+    pts.push(path[path.length - 1]);
+    return pts;
   }
 
-  // ===== drawFootRoute (construye pasos + triggers + resetea puntero) =====
+  // Hook: cuando el usuario se acerca a la próxima intersección, anunciar el “siguiente” paso
+  useEffect(() => {
+    if (!routeActive || !userLoc || !triggerPtsRef.current.length) return;
+
+    // Umbral de “llegada” a intersección (en metros)
+    const NEAR_M = 18;
+
+    const idx = Math.min(
+      Math.max(spokenStepIdxRef.current + 1, 0),
+      triggerPtsRef.current.length - 1
+    );
+    const target = triggerPtsRef.current[idx];
+    const d = L.latLng(userLoc.lat, userLoc.lng).distanceTo(target);
+
+    if (d <= NEAR_M) {
+      // Evita repetir demasiado seguido
+      const now = Date.now();
+      if (now - lastSpeakTsRef.current > 2500) {
+        // Anuncia el paso idx si existe en steps
+        if (idx >= 0 && idx < steps.length) {
+          speakAll([steps[idx]]);
+          lastSpeakTsRef.current = now;
+
+          // Avanza punteros (para que el modal muestre siempre los siguientes)
+          spokenStepIdxRef.current = idx;
+          setNextStepPointer(idx + 1);
+        }
+      }
+    }
+  }, [userLoc, routeActive, steps]);
+
   const drawFootRoute = async (fromLL: L.LatLng, toLL: L.LatLng, roomInfo?: Room) => {
     if (!mapRef.current) return;
 
-    clearRouteLayers();
-
+    clearRouteLayers(); // limpiar antes
     const ready = await waitForGraphReady();
     setRouteActive(true);
-    setStepsOpen(false);
-    setNextStepPointer(0);
+    setStepsOpen(false); // el modal NO se abre automáticamente (la voz guía)
 
     try {
       await ensureRoutingLib();
 
+      // 1) Intento con red peatonal interna
       if (ready) {
         const campusPath = routeOnCampus(fromLL, toLL);
         if (campusPath && campusPath.length >= 2) {
           const layer = L.polyline(campusPath, { weight: 5, opacity: 0.95 });
           routeLayerRef.current = layer.addTo(mapRef.current!);
           mapRef.current!.fitBounds(layer.getBounds(), { padding: [60, 60] });
+
           const insts = buildTurnByTurn(campusPath, toLL);
           const finalInsts = appendRoomInfoToSteps(insts, roomInfo);
           setSteps(finalInsts);
 
-          // triggers y puntero
-          setTurnTriggers(computeTurnTriggers(campusPath, finalInsts));
+          // Prepara puntos de disparo de voz
+          routePathRef.current = campusPath;
+          triggerPtsRef.current = computeTurnPoints(campusPath);
+          spokenStepIdxRef.current = -1;
           setNextStepPointer(0);
+          speakReset(); // no hablar ahora; hablar al acercarse
 
-          speakReset();
           return;
         }
       }
 
+      // 2) Fallback OSRM (a pie)
       const plan = (L as any).Routing.plan([fromLL, toLL], {
-        draggableWaypoints: false, addWaypoints: false,
+        draggableWaypoints: false,
+        addWaypoints: false,
         createMarker: (i: number, wp: any) =>
           L.marker(wp.latLng, { title: i === 0 ? "Origen (a pie)" : "Destino" }),
       });
@@ -1018,32 +1181,51 @@ export default function PublicNavigator() {
         plan,
         router: (L as any).Routing.osrmv1({
           serviceUrl: "https://router.project-osrm.org/route/v1",
-          profile: "foot", timeout: 12000, steps: true, annotations: true,
+          profile: "foot",
+          timeout: 12000,
+          steps: true,
+          annotations: true,
         }),
-        fitSelectedRoutes: true, routeWhileDragging: false, showAlternatives: false, show: false,
+        fitSelectedRoutes: true,
+        routeWhileDragging: false,
+        showAlternatives: false,
+        show: false,
       }).addTo(mapRef.current!);
       routingRef.current = ctrl;
 
       ctrl.on("routesfound", (e: any) => {
         const route = e.routes?.[0];
-        const coords: L.LatLng[] = (route?.coordinates || []).map((c: any) => L.latLng(c.lat, c.lng));
-        const insts = route?.instructions?.map((i: any) => i.text) ?? buildTurnByTurn(coords, toLL);
+        const coords: L.LatLng[] = (route?.coordinates || []).map((c: any) =>
+          L.latLng(c.lat, c.lng)
+        );
+
+        // Intentamos usar instrucciones de OSRM; si no, construimos las nuestras
+        const osrmInsts: string[] | undefined = route?.instructions?.map((i: any) => i.text);
+        const insts = osrmInsts && osrmInsts.length > 0 ? osrmInsts : buildTurnByTurn(coords, toLL);
         const finalInsts = appendRoomInfoToSteps(insts, roomInfo);
         setSteps(finalInsts);
 
-        setTurnTriggers(computeTurnTriggers(coords, finalInsts));
+        routePathRef.current = coords;
+        triggerPtsRef.current = computeTurnPoints(coords);
+        spokenStepIdxRef.current = -1;
         setNextStepPointer(0);
-
-        speakReset();
+        speakReset(); // no hablar ahora; hablar al acercarse
       });
 
       ctrl.on("routingerror", () => {
         toast.message("No se pudo obtener ruta peatonal, dibujo una guía directa.");
         drawFallbackLine(fromLL, toLL);
-        let insts = [`Camina en línea recta hacia el destino (≈ ${Math.round(haversine(fromLL, toLL))} m).`];
+        let insts = [
+          `Camina en línea recta hacia el destino (≈ ${Math.round(
+            haversine(fromLL, toLL)
+          )} m).`,
+        ];
         insts = appendRoomInfoToSteps(insts, roomInfo);
         setSteps(insts);
-        setTurnTriggers([]); // sin triggers
+
+        routePathRef.current = [fromLL, toLL];
+        triggerPtsRef.current = [toLL];
+        spokenStepIdxRef.current = -1;
         setNextStepPointer(0);
         speakReset();
       });
@@ -1051,10 +1233,17 @@ export default function PublicNavigator() {
       console.error(e);
       toast.error("No se pudo trazar la ruta. Te muestro una guía directa.");
       drawFallbackLine(fromLL, toLL);
-      let insts = [`Camina en línea recta hacia el destino (≈ ${Math.round(haversine(fromLL, toLL))} m).`];
+      let insts = [
+        `Camina en línea recta hacia el destino (≈ ${Math.round(
+          haversine(fromLL, toLL)
+        )} m).`,
+      ];
       insts = appendRoomInfoToSteps(insts, roomInfo);
       setSteps(insts);
-      setTurnTriggers([]);
+
+      routePathRef.current = [fromLL, toLL];
+      triggerPtsRef.current = [toLL];
+      spokenStepIdxRef.current = -1;
       setNextStepPointer(0);
       speakReset();
     }
@@ -1062,7 +1251,10 @@ export default function PublicNavigator() {
 
   const drawFallbackLine = (from: L.LatLng, to: L.LatLng) => {
     if (!mapRef.current) return;
-    if (routeLayerRef.current) { mapRef.current.removeLayer(routeLayerRef.current); routeLayerRef.current = null; }
+    if (routeLayerRef.current) {
+      mapRef.current.removeLayer(routeLayerRef.current);
+      routeLayerRef.current = null;
+    }
     const layer = L.polyline([from, to], { weight: 5, dashArray: "6 8", opacity: 0.9 });
     routeLayerRef.current = layer.addTo(mapRef.current);
     mapRef.current.fitBounds(layer.getBounds(), { padding: [60, 60] });
@@ -1070,64 +1262,60 @@ export default function PublicNavigator() {
 
   const showBuildingDirectionsNote = () => {
     if (!mapRef.current || !selectedBuilding) return;
-    if (buildingNoteRef.current) { mapRef.current.removeLayer(buildingNoteRef.current); buildingNoteRef.current = null; }
+    if (buildingNoteRef.current) {
+      mapRef.current.removeLayer(buildingNoteRef.current);
+      buildingNoteRef.current = null;
+    }
     const text = selectedRoom?.directions?.trim();
     if (!text) return;
-    const tt = L.tooltip({ permanent: true, direction: "top", className: "building-directions", offset: [0, -12], opacity: 0.95 })
+    const tt = L.tooltip({
+      permanent: true,
+      direction: "top",
+      className: "building-directions",
+      offset: [0, -12],
+      opacity: 0.95,
+    })
       .setLatLng([selectedBuilding.latitude, selectedBuilding.longitude])
       .setContent(`<b>Indicaciones:</b> ${text}`)
       .addTo(mapRef.current);
     buildingNoteRef.current = tt;
   };
 
-  // ======= TTS =======
+  // ====== TTS ======
   const speakAll = (texts: string[]) => {
-    if (!("speechSynthesis" in window)) { toast("Tu navegador no soporta voz."); return; }
+    if (!("speechSynthesis" in window)) {
+      toast("Tu navegador no soporta voz.");
+      return;
+    }
     const u = new SpeechSynthesisUtterance(texts.join(". "));
-    u.lang = "es-ES"; u.rate = 1; u.onend = () => setTtsPlaying(false);
-    window.speechSynthesis.cancel(); window.speechSynthesis.speak(u); setTtsPlaying(true);
-  };
-  const speakOne = (text: string) => {
-    if (!("speechSynthesis" in window)) return;
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = "es-ES"; u.rate = 1; u.onend = () => setTtsPlaying(false);
-    window.speechSynthesis.cancel(); window.speechSynthesis.speak(u); setTtsPlaying(true);
+    u.lang = "es-ES";
+    u.rate = 1;
+    u.onend = () => setTtsPlaying(false);
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(u);
+    setTtsPlaying(true);
   };
   const speakPause = () => {
     if (!("speechSynthesis" in window)) return;
-    if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) { window.speechSynthesis.pause(); setTtsPlaying(false); }
-    else if (window.speechSynthesis.paused) { window.speechSynthesis.resume(); setTtsPlaying(true); }
+    if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
+      window.speechSynthesis.pause();
+      setTtsPlaying(false);
+    } else if (window.speechSynthesis.paused) {
+      window.speechSynthesis.resume();
+      setTtsPlaying(true);
+    }
   };
-  const speakReset = () => { if (!("speechSynthesis" in window)) return; window.speechSynthesis.cancel(); setTtsPlaying(false); };
-
-  // ======= TTS automático del siguiente paso al acercarse a una intersección =======
-  useEffect(() => {
-    if (!routeActive || !userLoc || steps.length === 0) return;
-    if (turnTriggers.length === 0) {
-      // No hay giros detectados; si falta poco para terminar, puedes optar por anunciar el final.
-      return;
-    }
-    const here = L.latLng(userLoc.lat, userLoc.lng);
-    const PROXIMITY_M = 25;
-
-    const nextTrig = turnTriggers.find(t => !t.fired);
-    if (!nextTrig) return;
-
-    const d = here.distanceTo([nextTrig.lat, nextTrig.lng]);
-    if (d <= PROXIMITY_M) {
-      // Anuncia SOLO el paso correspondiente a este trigger
-      const sayIdx = Math.min(nextTrig.stepIndex, steps.length - 1);
-      speakOne(steps[sayIdx]);
-      // Marca disparado y avanza el puntero a lo que sigue
-      setTurnTriggers(prev => prev.map(t => (t === nextTrig ? { ...t, fired: true } : t)));
-      setNextStepPointer(Math.min(sayIdx + 1, steps.length - 1));
-      // No abrimos modal; solo voz
-    }
-  }, [userLoc, routeActive, steps, turnTriggers]);
+  const speakReset = () => {
+    if (!("speechSynthesis" in window)) return;
+    window.speechSynthesis.cancel();
+    setTtsPlaying(false);
+  };
 
   // Chat helpers
-  const pushAssistant = (text: string) => setChatMsgs((p) => [...p, { role: "assistant", text }]);
-  const pushUser = (text: string) => setChatMsgs((p) => [...p, { role: "user", text }]);
+  const pushAssistant = (text: string) =>
+    setChatMsgs((p) => [...p, { role: "assistant", text }]);
+  const pushUser = (text: string) =>
+    setChatMsgs((p) => [...p, { role: "user", text }]);
 
   const onChatSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1156,6 +1344,10 @@ export default function PublicNavigator() {
     setSelectedBuilding(null);
     setQuery("");
     setChatOpen(false);
+    routePathRef.current = null;
+    triggerPtsRef.current = [];
+    spokenStepIdxRef.current = -1;
+    setNextStepPointer(0);
   };
 
   // ================= UI =================
@@ -1167,9 +1359,13 @@ export default function PublicNavigator() {
           <div className="flex items-center gap-3 min-w-0">
             <div className="font-semibold text-sm sm:text-base leading-none">UNEMI Campus</div>
             {userLoc ? (
-              <Badge variant="secondary" className="hidden sm:inline-flex">GPS activo</Badge>
+              <Badge variant="secondary" className="hidden sm:inline-flex">
+                GPS activo
+              </Badge>
             ) : gpsDenied ? (
-              <Badge variant="destructive" className="hidden sm:inline-flex">GPS no disponible</Badge>
+              <Badge variant="destructive" className="hidden sm:inline-flex">
+                GPS no disponible
+              </Badge>
             ) : (
               <Badge className="hidden sm:inline-flex">Obteniendo GPS…</Badge>
             )}
@@ -1193,6 +1389,7 @@ export default function PublicNavigator() {
               Escribe tu destino y te llevo a la <b>entrada</b> más cercana o a la <b>referencia</b>. También puedes pegar un enlace compartido con <code>?lat=…&lng=…</code>.
             </div>
             <div className="flex gap-2">
+              {/* Compartir */}
               <Button
                 size="sm"
                 variant="outline"
@@ -1201,7 +1398,10 @@ export default function PublicNavigator() {
                   const lat = userLoc?.lat ?? center?.lat;
                   const lng = userLoc?.lng ?? center?.lng;
                   const zoom = mapRef.current?.getZoom();
-                  if (lat == null || lng == null) { toast.error("No hay ubicación para compartir aún"); return; }
+                  if (lat == null || lng == null) {
+                    toast.error("No hay ubicación para compartir aún");
+                    return;
+                  }
                   const url = buildShareUrl(lat, lng, zoom);
                   copyToClipboard(url);
                 }}
@@ -1218,7 +1418,7 @@ export default function PublicNavigator() {
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder='Ej: "Bloque CRAI", "Dirección de TICs", "Aula 201" o "plazoleta central"'
+                placeholder='Ej: "Bloque CRAI", "Dirección de TICs", "Secretaría General" o "plazoleta principal"'
               />
             </div>
             <Button type="submit">
@@ -1227,12 +1427,12 @@ export default function PublicNavigator() {
           </form>
 
           <div className="text-xs text-muted-foreground mt-2">
-            Coincide por <b>nombre</b>, <b>código de bloque</b> (ej. <b>CRAI</b>), <b>keywords</b>, <b>actividades</b> y <b>referencias</b>. No distingue mayúsculas ni acentos.
+            Coincide por <b>nombre</b>, <b>código de bloque</b>, <b>keywords</b>, <b>actividades</b> y <b>referencias</b>. No distingue mayúsculas ni acentos.
           </div>
         </Card>
       )}
 
-      {/* Panel edificio: oculto durante ruta para no tapar el mapa */}
+      {/* Panel edificio: oculto durante ruta */}
       {selectedBuilding && !routeActive && (
         <Card className="absolute bottom-4 left-4 right-4 md:left-6 md:right-auto md:w-[720px] z-[1200] p-4 shadow-xl border-border/60 bg-card/95 backdrop-blur">
           <div className="mb-2">
@@ -1296,7 +1496,10 @@ export default function PublicNavigator() {
               variant="secondary"
               onClick={() => {
                 if (!selectedBuilding) return;
-                if (!userLoc) { toast.error("Activa el GPS para trazar la ruta."); return; }
+                if (!userLoc) {
+                  toast.error("Activa el GPS para trazar la ruta.");
+                  return;
+                }
                 const from = L.latLng(userLoc.lat, userLoc.lng);
                 const to = bestEntranceForBuilding(selectedBuilding.id, from);
                 drawFootRoute(from, to, selectedRoom ?? undefined);
@@ -1310,11 +1513,7 @@ export default function PublicNavigator() {
               onClick={() => {
                 setSelectedRoom(null);
                 if (selectedBuilding && mapRef.current) {
-                  mapRef.current.setView(
-                    [selectedBuilding.latitude, selectedBuilding.longitude],
-                    18,
-                    { animate: true }
-                  );
+                  mapRef.current.setView([selectedBuilding.latitude, selectedBuilding.longitude], 18, { animate: true });
                 }
               }}
             >
@@ -1330,7 +1529,9 @@ export default function PublicNavigator() {
           <div className="rounded-md border bg-card/90 backdrop-blur px-3 py-2 shadow">
             <div className="text-xs text-muted-foreground">Destino</div>
             <div className="text-sm font-medium">
-              {selectedRoom ? `${selectedRoom.name}${selectedRoom.room_number ? ` · ${selectedRoom.room_number}` : ""}` : selectedBuilding.name}
+              {selectedRoom
+                ? `${selectedRoom.name}${selectedRoom.room_number ? ` · ${selectedRoom.room_number}` : ""}`
+                : selectedBuilding.name}
             </div>
           </div>
         </div>
@@ -1346,7 +1547,10 @@ export default function PublicNavigator() {
               <Button
                 size="sm"
                 onClick={() => {
-                  if (!userLoc) { toast.error("Activa el GPS para trazar la ruta."); return; }
+                  if (!userLoc) {
+                    toast.error("Activa el GPS para trazar la ruta.");
+                    return;
+                  }
                   drawFootRoute(L.latLng(userLoc.lat, userLoc.lng), sharedTarget);
                 }}
               >
@@ -1367,31 +1571,50 @@ export default function PublicNavigator() {
         </div>
       )}
 
-      {/* Instrucciones: MODAL — se mantiene, pero lista muestra “pasos siguientes” */}
+      {/* Instrucciones: MODAL (encima del mapa). 
+          Importante: mostramos SIEMPRE los “siguientes pasos” (a partir de nextStepPointer). */}
       <Dialog
         open={routeActive && stepsOpen && steps.length > 0}
-        onOpenChange={(o) => { if (!o) { setStepsOpen(false); speakReset(); } }}
+        onOpenChange={(o) => {
+          if (!o) {
+            setStepsOpen(false);
+            speakReset();
+          }
+        }}
       >
         <DialogPortal>
           <DialogOverlay className="fixed inset-0 z-[3000] bg-black/50 backdrop-blur-sm" />
-          <DialogContent className="z-[3001] p-0 max-w-none w-[100vw] h-[85vh] sm:h-auto sm:max-h[70vh] sm:max-w-lg">
+          <DialogContent className="z-[3001] p-0 max-w-none w-[100vw] h-[85vh] sm:h-auto sm:max-h-[70vh] sm:max-w-lg">
             <div className="flex flex-col h-full">
               {/* Header */}
               <div className="px-4 py-3 border-b flex items-center justify-between">
                 <div className="font-semibold">Instrucciones</div>
                 <div className="flex gap-2">
-                  <Button size="sm" variant="outline" onClick={() => speakAll(steps.slice(nextStepPointer))}>▶️</Button>
-                  <Button size="sm" variant="outline" onClick={speakPause}>{ttsPlaying ? "⏸️" : "⏯️"}</Button>
-                  <Button size="sm" variant="outline" onClick={() => { setStepsOpen(false); speakReset(); }}>
+                  <Button size="sm" variant="outline" onClick={() => speakAll(steps.slice(nextStepPointer))}>
+                    ▶️
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={speakPause}>
+                    {ttsPlaying ? "⏸️" : "⏯️"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setStepsOpen(false);
+                      speakReset();
+                    }}
+                  >
                     <X className="w-4 h-4" />
                   </Button>
                 </div>
               </div>
 
-              {/* Lista de pasos: SOLO los siguientes */}
+              {/* Lista de pasos: solo los siguientes */}
               <div className="flex-1 overflow-y-auto px-4 py-3">
                 <ol className="list-decimal pl-5 space-y-2 text-sm">
-                  {steps.slice(nextStepPointer).map((s, i) => (<li key={i}>{s}</li>))}
+                  {steps.slice(nextStepPointer).map((s, i) => (
+                    <li key={i}>{s}</li>
+                  ))}
                 </ol>
               </div>
             </div>
@@ -1402,11 +1625,13 @@ export default function PublicNavigator() {
       {/* Botón flotante “Ver pasos” */}
       {routeActive && steps.length > 0 && !stepsOpen && (
         <div className="absolute bottom-4 right-4 z-[1200]">
-          <Button size="lg" onClick={() => setStepsOpen(true)}>Ver pasos</Button>
+          <Button size="lg" onClick={() => setStepsOpen(true)}>
+            Ver pasos
+          </Button>
         </div>
       )}
 
-      {/* Botón flotante “Nueva consulta” — SIEMPRE visible (también escritorio) */}
+      {/* Botón flotante “Nueva ruta / Nueva consulta” — visible en móvil y escritorio */}
       {routeActive && (
         <div className="absolute bottom-4 left-4 z-[1200]">
           <Button size="lg" variant="secondary" onClick={resetUI}>
@@ -1420,13 +1645,19 @@ export default function PublicNavigator() {
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>{routeActive ? "Buscar otro destino" : "Te ayudo a llegar"}</DialogTitle>
-            <DialogDescription>Escribe “Bloque CRAI”, “Aula 201”, “Cómo llego a Dirección de TICs” o “plazoleta central”. También puedes pegar un enlace con <code>?lat</code> y <code>?lng</code>.</DialogDescription>
+            <DialogDescription>
+              Escribe “Bloque CRAI”, “Aula 201”, “Secretaría General” o “plazoleta principal”. También puedes pegar un enlace con <code>?lat</code> y <code>?lng</code>.
+            </DialogDescription>
           </DialogHeader>
 
           <div className="border rounded-md p-3 max-h-72 overflow-y-auto space-y-2">
             {chatMsgs.map((m, i) => (
               <div key={i} className={`flex ${m.role === "assistant" ? "justify-start" : "justify-end"}`}>
-                <div className={`px-3 py-2 rounded-md text-sm max-w-[80%] ${m.role === "assistant" ? "bg-muted" : "bg-primary text-primary-foreground"}`}>
+                <div
+                  className={`px-3 py-2 rounded-md text-sm max-w-[80%] ${
+                    m.role === "assistant" ? "bg-muted" : "bg-primary text-primary-foreground"
+                  }`}
+                >
                   {m.text}
                 </div>
               </div>
@@ -1438,47 +1669,53 @@ export default function PublicNavigator() {
               ref={chatInputRef}
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
-              placeholder='Ej: "Bloque CRAI", "Aula 201" o "plazoleta central"'
+              placeholder='Ej: "Bloque CRAI", "Secretaría General" o "plazoleta principal"'
             />
-            <Button type="submit"><Send className="w-4 h-4 mr-2" />Enviar</Button>
+            <Button type="submit">
+              <Send className="w-4 h-4 mr-2" />
+              Enviar
+            </Button>
           </form>
         </DialogContent>
       </Dialog>
 
-      {/* Diálogo de resultados múltiples — SIEMPRE por encima del mapa */}
+      {/* Diálogo de resultados múltiples — aparece por encima del mapa */}
       <Dialog open={resultsOpen} onOpenChange={setResultsOpen}>
-        <DialogPortal>
-          <DialogOverlay className="fixed inset-0 z-[3000] bg-black/50 backdrop-blur-sm" />
-          <DialogContent className="z-[3001] sm:max-w-lg">
-            <DialogHeader>
-              <DialogTitle>Selecciona tu destino</DialogTitle>
-              <DialogDescription>Encontré varias coincidencias para tu búsqueda.</DialogDescription>
-            </DialogHeader>
+        <DialogContent className="sm:max-w-lg z-[3001]">
+          <DialogHeader>
+            <DialogTitle>Selecciona tu destino</DialogTitle>
+            <DialogDescription>Encontré varias coincidencias para tu búsqueda.</DialogDescription>
+          </DialogHeader>
 
-            <div className="space-y-2 max-h-80 overflow-y-auto">
-              {resultHits.map((hit, idx) => (
-                <button
-                  key={idx}
-                  onClick={() => resolveHit(hit)}
-                  className="w-full text-left border rounded-md p-2 hover:bg-accent hover:text-accent-foreground transition"
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="font-medium text-sm">
-                      {hit.label}
-                      {"room" in hit && hit.room.room_number ? ` · ${hit.room.room_number}` : ""}
-                    </div>
-                    <Badge variant={hit.kind === "room" ? "default" : "outline"}>
-                      {hit.kind === "room" ? "Espacio" : hit.kind === "building" ? "Bloque" : "Referencia"}
-                    </Badge>
+          <div className="space-y-2 max-h-80 overflow-y-auto">
+            {resultHits.map((hit, idx) => (
+              <button
+                key={idx}
+                onClick={() => resolveHit(hit)}
+                className="w-full text-left border rounded-md p-2 hover:bg-accent hover:text-accent-foreground transition"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="font-medium text-sm">
+                    {hit.label}
+                    {"room" in hit && hit.room.room_number ? ` · ${hit.room.room_number}` : ""}
                   </div>
-                  {"sub" in hit && hit.sub && (
-                    <div className="text-xs text-muted-foreground mt-1 line-clamp-2">{hit.sub}</div>
-                  )}
-                </button>
-              ))}
-            </div>
-          </DialogContent>
-        </DialogPortal>
+                  <Badge variant={hit.kind === "room" ? "default" : "outline"}>
+                    {hit.kind === "room"
+                      ? "Espacio"
+                      : hit.kind === "building"
+                      ? "Bloque"
+                      : "Referencia"}
+                  </Badge>
+                </div>
+                {"sub" in hit && (hit as any).sub && (
+                  <div className="text-xs text-muted-foreground mt-1 line-clamp-2">
+                    {(hit as any).sub}
+                  </div>
+                )}
+              </button>
+            ))}
+          </div>
+        </DialogContent>
       </Dialog>
     </div>
   );
