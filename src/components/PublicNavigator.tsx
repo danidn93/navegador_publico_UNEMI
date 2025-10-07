@@ -44,6 +44,25 @@ const norm = (s: string) =>
     .replace(/[\u0300-\u036f]/g, "")
     .trim();
 
+// Stopwords básicas en ES (normalizadas sin tildes)
+const STOPWORDS_ES = new Set([
+  "a","al","del","de","la","las","el","los","un","una","unos","unas",
+  "y","o","u","que","como","donde","donde","cuando","cuanto","cual",
+  "cuales","por","para","en","con","sin","sobre","entre","hasta","desde",
+  "puedo","puedes","puede","quiero","quieres","quiere","pedir","pido",
+  "me","mi","mis","su","sus","tu","tus","lo","le","les","se"
+]);
+
+// Extrae tokens "fuertes": no stopword y longitud >= 3
+const strongTokensOf = (tokens: string[]) =>
+  tokens.filter(t => !STOPWORDS_ES.has(t) && t.length >= 3);
+
+// ¿Hay al menos un token?
+const matchAnyToken = (haystack: string, tokens: string[]) => {
+  const H = norm(haystack);
+  return tokens.some(t => H.includes(t));
+};
+
 // Divide la consulta en tokens útiles (2+ chars), sin tildes ni símbolos
 const tokenize = (s: string) =>
   norm(s)
@@ -514,24 +533,28 @@ export default function PublicNavigator() {
 
   // ==== Buildings: coincidencias parciales por tokens (name/building_code), insensible a tildes ====
   const findBuilding = (termRaw: string): Building[] => {
-    let t = norm(termRaw).replace(/^bloque\s+/, ""); // permite “bloque crai” -> “crai”
+    let t = norm(termRaw).replace(/^bloque\s+/, "");
     const tokens = tokenize(t);
+    const strong = strongTokensOf(tokens);
 
-    // Candidatos: contienen TODOS los tokens
+    if (strong.length === 0) {
+      // Sin tokens fuertes no intentamos “relajar” para evitar falsos positivos como "un"
+      return [];
+    }
+
+    // Candidatos: contienen TODOS los strongTokens en name o code
     const cands = buildings.filter((b) => {
       const label = `${b.name} ${b.building_code ?? ""}`;
-      return matchAllTokens(label, tokens);
+      return matchAllTokens(label, strong);
     });
 
-    // Si nada, relaja: cualquiera que contenga al menos un token
-    if (cands.length === 0) {
-      return buildings.filter((b) => {
-        const label = `${b.name} ${b.building_code ?? ""}`;
-        const H = norm(label);
-        return tokens.some(tok => H.includes(tok));
-      });
-    }
-    return cands;
+    if (cands.length > 0) return cands;
+
+    // Relaja: contienen ALGUNO de los strongTokens (pero solo strong, no stopwords)
+    return buildings.filter((b) => {
+      const label = `${b.name} ${b.building_code ?? ""}`;
+      return matchAnyToken(label, strong);
+    });
   };
 
   // ==== Rooms: OR amplio en SQL + filtro por tokens en cliente (name, room_number, keywords[], actividades[]) ====
@@ -569,6 +592,7 @@ export default function PublicNavigator() {
     if (error) { console.error(error); toast.error("Error buscando espacios"); return []; }
 
     // Filtro final: exigir TODOS los tokens en algún campo consolidado
+    const strong = strongTokensOf(tokens);
     const filtered = (data || []).filter((r: any) => {
       const bag = [
         r.name ?? "",
@@ -577,7 +601,7 @@ export default function PublicNavigator() {
         ...(r.keywords ?? []),
         ...(r.actividades ?? []),
       ].join(" ");
-      return matchAllTokens(bag, tokens);
+      return strong.length > 0 ? matchAllTokens(bag, strong) : matchAnyToken(bag, tokens);
     }) as Room[];
 
     // Priorización por categoría (si aplica)
@@ -605,9 +629,10 @@ export default function PublicNavigator() {
     if (error) { console.error(error); return []; }
 
     const list = (data || []) as Landmark[];
+    const strong = strongTokensOf(tokens);
     return list.filter(lm => {
       const label = `${lm.name ?? ""} ${lm.type}`;
-      return matchAllTokens(label, tokens);
+      return strong.length > 0 ? matchAllTokens(label, strong) : matchAnyToken(label, tokens);
     });
   };
 
