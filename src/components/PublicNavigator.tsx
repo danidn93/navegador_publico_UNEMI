@@ -265,7 +265,7 @@ export default function PublicNavigator() {
   const [userLoc, setUserLoc] = useState<{ lat: number; lng: number } | null>(null);
   const [gpsDenied, setGpsDenied] = useState(false);
 
-  // Seguir GPS activo por defecto (no hay botón para cambiarlo)
+  // Seguir GPS activo por defecto
   const gpsFollow = true;
 
   const [isAdmin, setIsAdmin] = useState(false);
@@ -313,11 +313,14 @@ export default function PublicNavigator() {
   const [steps, setSteps] = useState<string[]>([]);
   const [ttsPlaying, setTtsPlaying] = useState(false);
 
-  // Navegación responsiva
-  const [routeActive, setRouteActive] = useState(false); // hay una ruta dibujada
-  const [stepsOpen, setStepsOpen] = useState(false);     // panel de pasos expandido
+  // NUEVO: índice del siguiente paso (para que el modal muestre “lo que viene”)
+  const [nextStepPointer, setNextStepPointer] = useState(0);
 
-  // Chat (se conserva para atajo “/”, pero no se muestra botón en tarjeta)
+  // Navegación responsiva
+  const [routeActive, setRouteActive] = useState(false);
+  const [stepsOpen, setStepsOpen] = useState(false);
+
+  // Chat
   const [chatOpen, setChatOpen] = useState(false);
   const [chatMsgs, setChatMsgs] = useState<ChatMsg[]>([
     { role: "assistant", text: "Hola 👋 ¿A qué edificio, espacio o referencia quieres ir? (Ej: “Bloque R”, “Dirección de TICs” o “plazoleta central”)." },
@@ -755,7 +758,7 @@ export default function PublicNavigator() {
       const { G, segs } = buildGraphAndSegments(footways);
       graphRef.current = G; segmentsRef.current = segs;
     }
-    return { G: graphRef.current!, segments: segmentsRef.current! };
+    return { G: graphRef.current!, segments: graphRef.current ? segmentsRef.current! : [] };
   };
 
   const astar = (G: Map<NodeId, Node>, start: NodeId, goal: NodeId): NodeId[] | null => {
@@ -850,8 +853,10 @@ export default function PublicNavigator() {
       buildingNoteRef.current = null;
     }
     setSteps([]); // limpia guía
-    setRouteActive(false);  // salir del modo navegación
-    setStepsOpen(false);    // contraer panel de pasos
+    setTurnTriggers([]); // reset disparadores
+    setNextStepPointer(0); // reset puntero
+    setRouteActive(false);
+    setStepsOpen(false);
   };
 
   const focusRoom = async (room: Room) => {
@@ -885,7 +890,7 @@ export default function PublicNavigator() {
       }
       const from = L.latLng(userLoc.lat, userLoc.lng);
       const to = bestEntranceForBuilding((building as Building).id, from);
-      await drawFootRoute(from, to, roomWithFloor); // <-- pasa el room explícito
+      await drawFootRoute(from, to, roomWithFloor);
     } catch (e) { console.error(e); toast.error("No se pudo focalizar el espacio"); }
   };
 
@@ -901,7 +906,7 @@ export default function PublicNavigator() {
       L.popup().setLatLng(ll).setContent(`<b>${lm.name ?? lm.type}</b>`).openOn(mapRef.current);
       return;
     }
-    await drawFootRoute(L.latLng(userLoc.lat, userLoc.lng), ll); // sin roomInfo
+    await drawFootRoute(L.latLng(userLoc.lat, userLoc.lng), ll);
     mapRef.current.setView(ll, 18, { animate: true });
     L.popup().setLatLng(ll).setContent(`<b>${lm.name ?? lm.type}</b>`).openOn(mapRef.current);
   };
@@ -922,15 +927,39 @@ export default function PublicNavigator() {
     return out;
   };
 
-  // ===== drawFootRoute recibe roomInfo opcional =====
+  // ===== NUEVO: Turn triggers para anunciar el siguiente paso por voz =====
+  const [turnTriggers, setTurnTriggers] = useState<
+    { lat: number; lng: number; stepIndex: number; fired: boolean }[]
+  >([]);
+
+  function computeTurnTriggers(path: L.LatLng[], stepsText: string[]) {
+    const triggers: { lat: number; lng: number; stepIndex: number; fired: boolean }[] = [];
+    // correlaciona cada giro geométrico con un índice de paso
+    // (solo los pasos de giro y tramos, no los anexados de piso/directions)
+    let stepIdx = 0;
+    for (let i = 1; i < path.length - 1; i++) {
+      const dir = turnDirection(path[i - 1], path[i], path[i + 1]);
+      if (dir) {
+        if (stepIdx < stepsText.length) {
+          triggers.push({ lat: path[i].lat, lng: path[i].lng, stepIndex: stepIdx, fired: false });
+        }
+        stepIdx++;
+      }
+    }
+    // el último “Continúa … hasta la entrada” probablemente quede como paso sin trigger de giro
+    return triggers;
+  }
+
+  // ===== drawFootRoute (construye pasos + triggers + resetea puntero) =====
   const drawFootRoute = async (fromLL: L.LatLng, toLL: L.LatLng, roomInfo?: Room) => {
     if (!mapRef.current) return;
 
-    clearRouteLayers(); // limpiar antes
+    clearRouteLayers();
 
     const ready = await waitForGraphReady();
-    setRouteActive(true);   // entrar a modo navegación
-    setStepsOpen(false);    // pasos ocultos por defecto
+    setRouteActive(true);
+    setStepsOpen(false);
+    setNextStepPointer(0);
 
     try {
       await ensureRoutingLib();
@@ -944,7 +973,12 @@ export default function PublicNavigator() {
           const insts = buildTurnByTurn(campusPath, toLL);
           const finalInsts = appendRoomInfoToSteps(insts, roomInfo);
           setSteps(finalInsts);
-          speakReset(); // no auto TTS para dejar el mapa limpio
+
+          // triggers y puntero
+          setTurnTriggers(computeTurnTriggers(campusPath, finalInsts));
+          setNextStepPointer(0);
+
+          speakReset();
           return;
         }
       }
@@ -971,6 +1005,10 @@ export default function PublicNavigator() {
         const insts = route?.instructions?.map((i: any) => i.text) ?? buildTurnByTurn(coords, toLL);
         const finalInsts = appendRoomInfoToSteps(insts, roomInfo);
         setSteps(finalInsts);
+
+        setTurnTriggers(computeTurnTriggers(coords, finalInsts));
+        setNextStepPointer(0);
+
         speakReset();
       });
 
@@ -980,6 +1018,8 @@ export default function PublicNavigator() {
         let insts = [`Camina en línea recta hacia el destino (≈ ${Math.round(haversine(fromLL, toLL))} m).`];
         insts = appendRoomInfoToSteps(insts, roomInfo);
         setSteps(insts);
+        setTurnTriggers([]); // sin triggers
+        setNextStepPointer(0);
         speakReset();
       });
     } catch (e) {
@@ -989,6 +1029,8 @@ export default function PublicNavigator() {
       let insts = [`Camina en línea recta hacia el destino (≈ ${Math.round(haversine(fromLL, toLL))} m).`];
       insts = appendRoomInfoToSteps(insts, roomInfo);
       setSteps(insts);
+      setTurnTriggers([]);
+      setNextStepPointer(0);
       speakReset();
     }
   };
@@ -1013,10 +1055,16 @@ export default function PublicNavigator() {
     buildingNoteRef.current = tt;
   };
 
-  // TTS
+  // ======= TTS =======
   const speakAll = (texts: string[]) => {
     if (!("speechSynthesis" in window)) { toast("Tu navegador no soporta voz."); return; }
     const u = new SpeechSynthesisUtterance(texts.join(". "));
+    u.lang = "es-ES"; u.rate = 1; u.onend = () => setTtsPlaying(false);
+    window.speechSynthesis.cancel(); window.speechSynthesis.speak(u); setTtsPlaying(true);
+  };
+  const speakOne = (text: string) => {
+    if (!("speechSynthesis" in window)) return;
+    const u = new SpeechSynthesisUtterance(text);
     u.lang = "es-ES"; u.rate = 1; u.onend = () => setTtsPlaying(false);
     window.speechSynthesis.cancel(); window.speechSynthesis.speak(u); setTtsPlaying(true);
   };
@@ -1026,6 +1074,31 @@ export default function PublicNavigator() {
     else if (window.speechSynthesis.paused) { window.speechSynthesis.resume(); setTtsPlaying(true); }
   };
   const speakReset = () => { if (!("speechSynthesis" in window)) return; window.speechSynthesis.cancel(); setTtsPlaying(false); };
+
+  // ======= TTS automático del siguiente paso al acercarse a una intersección =======
+  useEffect(() => {
+    if (!routeActive || !userLoc || steps.length === 0) return;
+    if (turnTriggers.length === 0) {
+      // No hay giros detectados; si falta poco para terminar, puedes optar por anunciar el final.
+      return;
+    }
+    const here = L.latLng(userLoc.lat, userLoc.lng);
+    const PROXIMITY_M = 25;
+
+    const nextTrig = turnTriggers.find(t => !t.fired);
+    if (!nextTrig) return;
+
+    const d = here.distanceTo([nextTrig.lat, nextTrig.lng]);
+    if (d <= PROXIMITY_M) {
+      // Anuncia SOLO el paso correspondiente a este trigger
+      const sayIdx = Math.min(nextTrig.stepIndex, steps.length - 1);
+      speakOne(steps[sayIdx]);
+      // Marca disparado y avanza el puntero a lo que sigue
+      setTurnTriggers(prev => prev.map(t => (t === nextTrig ? { ...t, fired: true } : t)));
+      setNextStepPointer(Math.min(sayIdx + 1, steps.length - 1));
+      // No abrimos modal; solo voz
+    }
+  }, [userLoc, routeActive, steps, turnTriggers]);
 
   // Chat helpers
   const pushAssistant = (text: string) => setChatMsgs((p) => [...p, { role: "assistant", text }]);
@@ -1077,12 +1150,12 @@ export default function PublicNavigator() {
             )}
           </div>
 
-          {/* Acciones derecha: (Quitado botón Compartir del navbar) */}
+          {/* Acciones derecha */}
           <div className="flex items-center gap-2" />
         </div>
       </div>
 
-      {/* Mapa (ajusta padding-top según NavBar) */}
+      {/* Mapa */}
       <div className={`absolute inset-0 ${routeActive ? "pt-10" : "pt-12"}`}>
         <div ref={mapContainer} className="w-full h-full" />
       </div>
@@ -1095,7 +1168,6 @@ export default function PublicNavigator() {
               Escribe tu destino y te llevo a la <b>entrada</b> más cercana o a la <b>referencia</b>. También puedes pegar un enlace compartido con <code>?lat=…&lng=…</code>.
             </div>
             <div className="flex gap-2">
-              {/* Reemplaza “Asistente” por “Compartir” */}
               <Button
                 size="sm"
                 variant="outline"
@@ -1202,7 +1274,6 @@ export default function PublicNavigator() {
                 if (!userLoc) { toast.error("Activa el GPS para trazar la ruta."); return; }
                 const from = L.latLng(userLoc.lat, userLoc.lng);
                 const to = bestEntranceForBuilding(selectedBuilding.id, from);
-                // Si hay room seleccionado, agrega piso+directions en los pasos
                 drawFootRoute(from, to, selectedRoom ?? undefined);
               }}
             >
@@ -1271,22 +1342,20 @@ export default function PublicNavigator() {
         </div>
       )}
 
-      {/* Instrucciones: MODAL responsive (con z-index alto para estar sobre Leaflet) */}
+      {/* Instrucciones: MODAL — se mantiene, pero lista muestra “pasos siguientes” */}
       <Dialog
         open={routeActive && stepsOpen && steps.length > 0}
         onOpenChange={(o) => { if (!o) { setStepsOpen(false); speakReset(); } }}
       >
         <DialogPortal>
-          {/* Overlay por encima del mapa */}
           <DialogOverlay className="fixed inset-0 z-[3000] bg-black/50 backdrop-blur-sm" />
-          {/* Contenido del modal, también elevado */}
-          <DialogContent className="z-[3001] p-0 max-w-none w-[100vw] h-[85vh] sm:h-auto sm:max-h-[70vh] sm:max-w-lg">
+          <DialogContent className="z-[3001] p-0 max-w-none w-[100vw] h-[85vh] sm:h-auto sm:max-h[70vh] sm:max-w-lg">
             <div className="flex flex-col h-full">
               {/* Header */}
               <div className="px-4 py-3 border-b flex items-center justify-between">
                 <div className="font-semibold">Instrucciones</div>
                 <div className="flex gap-2">
-                  <Button size="sm" variant="outline" onClick={() => speakAll(steps)}>▶️</Button>
+                  <Button size="sm" variant="outline" onClick={() => speakAll(steps.slice(nextStepPointer))}>▶️</Button>
                   <Button size="sm" variant="outline" onClick={speakPause}>{ttsPlaying ? "⏸️" : "⏯️"}</Button>
                   <Button size="sm" variant="outline" onClick={() => { setStepsOpen(false); speakReset(); }}>
                     <X className="w-4 h-4" />
@@ -1294,10 +1363,10 @@ export default function PublicNavigator() {
                 </div>
               </div>
 
-              {/* Lista de pasos */}
+              {/* Lista de pasos: SOLO los siguientes */}
               <div className="flex-1 overflow-y-auto px-4 py-3">
                 <ol className="list-decimal pl-5 space-y-2 text-sm">
-                  {steps.map((s, i) => (<li key={i}>{s}</li>))}
+                  {steps.slice(nextStepPointer).map((s, i) => (<li key={i}>{s}</li>))}
                 </ol>
               </div>
             </div>
@@ -1312,16 +1381,16 @@ export default function PublicNavigator() {
         </div>
       )}
 
-      {/* Botón flotante “Nueva ruta” en móvil */}
+      {/* Botón flotante “Nueva consulta” — SIEMPRE visible (también escritorio) */}
       {routeActive && (
-        <div className="absolute bottom-4 left-4 z-[1200] md:hidden">
+        <div className="absolute bottom-4 left-4 z-[1200]">
           <Button size="lg" variant="secondary" onClick={resetUI}>
-            <PanelTopOpen className="w-5 h-5 mr-2" /> Nueva ruta
+            <PanelTopOpen className="w-5 h-5 mr-2" /> Nueva consulta
           </Button>
         </div>
       )}
 
-      {/* Modal chat/búsqueda (se mantiene para atajo "/") */}
+      {/* Modal chat/búsqueda (atajo "/") */}
       <Dialog open={chatOpen} onOpenChange={setChatOpen}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
@@ -1351,37 +1420,40 @@ export default function PublicNavigator() {
         </DialogContent>
       </Dialog>
 
-      {/* Diálogo de resultados múltiples */}
+      {/* Diálogo de resultados múltiples — SIEMPRE por encima del mapa */}
       <Dialog open={resultsOpen} onOpenChange={setResultsOpen}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Selecciona tu destino</DialogTitle>
-            <DialogDescription>Encontré varias coincidencias para tu búsqueda.</DialogDescription>
-          </DialogHeader>
+        <DialogPortal>
+          <DialogOverlay className="fixed inset-0 z-[3000] bg-black/50 backdrop-blur-sm" />
+          <DialogContent className="z-[3001] sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Selecciona tu destino</DialogTitle>
+              <DialogDescription>Encontré varias coincidencias para tu búsqueda.</DialogDescription>
+            </DialogHeader>
 
-          <div className="space-y-2 max-h-80 overflow-y-auto">
-            {resultHits.map((hit, idx) => (
-              <button
-                key={idx}
-                onClick={() => resolveHit(hit)}
-                className="w-full text-left border rounded-md p-2 hover:bg-accent hover:text-accent-foreground transition"
-              >
-                <div className="flex items-center justify-between">
-                  <div className="font-medium text-sm">
-                    {hit.label}
-                    {"room" in hit && hit.room.room_number ? ` · ${hit.room.room_number}` : ""}
+            <div className="space-y-2 max-h-80 overflow-y-auto">
+              {resultHits.map((hit, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => resolveHit(hit)}
+                  className="w-full text-left border rounded-md p-2 hover:bg-accent hover:text-accent-foreground transition"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="font-medium text-sm">
+                      {hit.label}
+                      {"room" in hit && hit.room.room_number ? ` · ${hit.room.room_number}` : ""}
+                    </div>
+                    <Badge variant={hit.kind === "room" ? "default" : "outline"}>
+                      {hit.kind === "room" ? "Espacio" : hit.kind === "building" ? "Bloque" : "Referencia"}
+                    </Badge>
                   </div>
-                  <Badge variant={hit.kind === "room" ? "default" : "outline"}>
-                    {hit.kind === "room" ? "Espacio" : hit.kind === "building" ? "Bloque" : "Referencia"}
-                  </Badge>
-                </div>
-                {"sub" in hit && hit.sub && (
-                  <div className="text-xs text-muted-foreground mt-1 line-clamp-2">{hit.sub}</div>
-                )}
-              </button>
-            ))}
-          </div>
-        </DialogContent>
+                  {"sub" in hit && hit.sub && (
+                    <div className="text-xs text-muted-foreground mt-1 line-clamp-2">{hit.sub}</div>
+                  )}
+                </button>
+              ))}
+            </div>
+          </DialogContent>
+        </DialogPortal>
       </Dialog>
     </div>
   );
