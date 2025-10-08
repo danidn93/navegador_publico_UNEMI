@@ -161,6 +161,20 @@ const CATEGORY_WORDS = [
   "corredor",
 ];
 
+// --- Fast-path para "Aula N"
+const AULA_RE = /\baula\s*0*(\d+)\b/i;
+
+const extractAulaNumber = (q: string): number | null => {
+  const m = norm(q).match(/\baula\s*0*(\d+)\b/);
+  return m ? parseInt(m[1], 10) : null;
+};
+
+const nameHasAulaPhrase = (name: string, n: number) => {
+  // Coincidencia robusta: "aula 1", "aula   01", con límites de palabra
+  const rx = new RegExp(`\\baula\\s*0*${n}\\b`, "i");
+  return rx.test(name);
+};
+
 // Términos que obligan a elegir el más cercano automáticamente
 const NEAREST_TERMS = [
   // baños
@@ -767,6 +781,8 @@ export default function PublicNavigator() {
       return;
     }
 
+    const hDistance = (h: SearchHit) => (typeof h.distanceMeters === "number" ? h.distanceMeters : Number.POSITIVE_INFINITY);
+
     // Enriquecer con distancia si hay GPS y ordenar por distancia
     hits = await enrichHitsWithDistance(hits, userLoc);
     const haveDistances = hits.some(h => typeof h.distanceMeters === "number");
@@ -774,10 +790,48 @@ export default function PublicNavigator() {
       hits.sort((a, b) => {
         const da = a.distanceMeters ?? Number.POSITIVE_INFINITY;
         const db = b.distanceMeters ?? Number.POSITIVE_INFINITY;
+        
         return da - db;
       });
     }
 
+    const scoreRoomForAulaPhrase = (r: Room, aulaN: number) => {
+      const nm = r.name ?? "";
+      let s = 0;
+      if (nameHasAulaPhrase(nm, aulaN)) s += 1000;           // match exacto por frase en name
+      // Puedes añadir reglas extra si quieres:
+      // if ((r.room_number ?? "").includes(String(aulaN))) s += 100;
+      return s;
+    };
+
+    const aulaN = extractAulaNumber(q);
+    if (aulaN != null) {
+      let aulaRooms = hits
+        .filter(h => h.kind === "room" && nameHasAulaPhrase((h as any).room.name ?? "", aulaN)) as Extract<typeof hits[number], { kind: "room" }>[];
+
+      if (aulaRooms.length > 0) {
+        // Ordena por distancia (si hay) y por score de frase exacta
+        aulaRooms = aulaRooms
+          .map(h => ({
+            h,
+            score: scoreRoomForAulaPhrase(h.room, aulaN)
+          }))
+          .sort((a, b) => {
+            // primero mayor score
+            if (b.score !== a.score) return b.score - a.score;
+            // luego menor distancia si existe
+            const da = hDistance(a.h);
+            const db = hDistance(b.h);
+            return da - db;
+          })
+          .map(x => x.h);
+
+        // Ir directo al mejor match
+        await resolveHit(aulaRooms[0]);
+        return;
+      }
+    }
+    
     // Si la consulta pide explícitamente "lo más cercano" (baños/bar/tienda), auto-ir al primero
     if (queryAsksNearest(q) && haveDistances) {
       await resolveHit(hits[0]); // el más cercano
