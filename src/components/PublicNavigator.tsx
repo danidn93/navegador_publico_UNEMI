@@ -1551,7 +1551,7 @@ export default function PublicNavigator() {
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder='Ej: "Bloque CRAI", "Dirección de TICs", "Secretaría General" o "plazoleta principal"'
+                placeholder='Ej: "Aula 1", "Aula 2", "Aula 3"'
               />
             </div>
             <Button type="submit">
@@ -1560,7 +1560,7 @@ export default function PublicNavigator() {
           </form>
 
           <div className="text-xs text-muted-foreground mt-2">
-            Coincide por <b>nombre</b>, <b>código de bloque</b>, <b>keywords</b>, <b>actividades</b> y <b>referencias</b>. No distingue mayúsculas ni acentos.
+            Ingresa el Aula donde debes dirigirte
           </div>
         </Card>
       )}
