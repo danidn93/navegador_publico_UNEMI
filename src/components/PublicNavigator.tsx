@@ -1519,7 +1519,7 @@ export default function PublicNavigator() {
         <Card className="absolute top-16 left-4 right-4 md:left-6 md:right-auto md:w-[840px] z-[1200] p-3 shadow-xl border-border/60 bg-card/95 backdrop-blur">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
             <div className="text-sm text-muted-foreground">
-              Escribe tu destino y te llevo a la <b>entrada</b> más cercana o a la <b>referencia</b>. También puedes pegar un enlace compartido con <code>?lat=…&lng=…</code>.
+              Escribe tu destino y te llevo a la <b>entrada</b> más cercana o a la <b>referencia</b>.
             </div>
             <div className="flex gap-2">
               {/* Compartir */}
