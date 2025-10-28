@@ -31,6 +31,7 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,webp}'],
+        globIgnores: ['**/mascota-unemi.png'],
         runtimeCaching: [
           {
             urlPattern: ({ url }: { url: URL }) => url.origin.includes('tile.openstreetmap.org'),
