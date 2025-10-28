@@ -20,9 +20,17 @@ import {
   DialogPortal,
   DialogOverlay,
 } from "@/components/ui/dialog";
-import { Search, Send, PanelTopOpen, X, MapPin, LogIn, LogOut, UserCircle2 } from "lucide-react";
+import {
+  Search,
+  PanelTopOpen,
+  X,
+  MapPin,
+  LogIn,
+  LogOut,
+  UserCircle2,
+} from "lucide-react";
 
-// Fix iconos Leaflet (si ya lo hiciste en otro sitio, está OK repetir)
+// Fix iconos Leaflet
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 L.Icon.Default.mergeOptions({
   iconRetinaUrl:
@@ -49,7 +57,8 @@ const tokenize = (s: string) =>
     .map((t) => t.replace(/[^\p{L}\p{N}]/gu, ""))
     .filter((t) => t.length >= 2 || /^\d+$/.test(t));
 
-const strongTokensOf = (tokens: string[]) => tokens.filter((t) => t.length >= 3 || /^\d+$/.test(t));
+const strongTokensOf = (tokens: string[]) =>
+  tokens.filter((t) => t.length >= 3 || /^\d+$/.test(t));
 
 const UNEMI_CENTER: [number, number] = [-2.14898719, -79.60420553];
 
@@ -300,19 +309,24 @@ export default function PublicNavigator() {
   // Imagen del primer edificio del recorrido (nuevo requerimiento)
   const [firstRouteBuildingImage, setFirstRouteBuildingImage] = useState<string | null>(null);
 
-  // Mostrar la imagen del edificio solo en el primer step de ese edificio (modal)
-  const [showBuildingImageOnce, setShowBuildingImageOnce] = useState(false);
-
   // Refs para ruteo por voz
   const routePathRef = useRef<L.LatLng[] | null>(null);
   const triggerPtsRef = useRef<L.LatLng[]>([]);
   const spokenStepIdxRef = useRef<number>(-1);
   const lastSpeakTsRef = useRef<number>(0);
 
-  // Refs para trackear building/floor previos y primer step building id
-  const prevBuildingRef = useRef<string | null>(null);
-  const prevFloorRef = useRef<number | null>(null);
-  const firstStepBuildingIdRef = useRef<string | null>(null);
+  // Prev step refs (para evitar repetir piso)
+  const prevStepBuildingIdRef = useRef<string | null>(null);
+  const prevStepFloorNumberRef = useRef<number | null>(null);
+
+  // Estados para modal de selección de resultados de búsqueda
+  type Hit =
+    | { kind: "room"; room: Room; label: string }
+    | { kind: "landmark"; landmark: Landmark; label: string }
+    | { kind: "building"; building: Building; label: string };
+
+  const [searchHits, setSearchHits] = useState<Hit[]>([]);
+  const [searchModalOpen, setSearchModalOpen] = useState(false);
 
   // Cargar sesión simple desde localStorage (si la usas)
   useEffect(() => {
@@ -746,70 +760,47 @@ export default function PublicNavigator() {
   };
 
   // ====== TTS helpers ======
-  const speakAll = async (texts: string[]) => {
+  const speakAll = (texts: string[]) => {
     if (!("speechSynthesis" in window)) {
       toast("Tu navegador no soporta voz.");
       return;
     }
     if (!texts || texts.length === 0) return;
+    try {
+      window.speechSynthesis.cancel();
+    } catch {}
+    const u = new SpeechSynthesisUtterance(texts.join(". "));
+    u.lang = "es-ES";
+    u.rate = 1;
+
+    u.onend = () => setTtsPlaying(false);
+    u.onerror = (ev: any) => {
+      console.warn("TTS error", ev);
+      setTtsPlaying(false);
+      toast.message("TTS: reproducción cancelada o falla en el navegador.");
+    };
 
     try {
-      // Si hay algo sonando, cancelamos (pequeña pausa para evitar 'canceled' ruidoso)
-      if (window.speechSynthesis.speaking) {
-        window.speechSynthesis.cancel();
-        await new Promise((r) => setTimeout(r, 80));
-      }
-
-      const u = new SpeechSynthesisUtterance(texts.join(". "));
-      u.lang = "es-ES";
-      u.rate = 1;
-
-      u.onstart = () => setTtsPlaying(true);
-      u.onend = () => setTtsPlaying(false);
-      u.onerror = (ev: any) => {
-        // Ignorar cancelaciones esperadas; mostrar solo errores reales
-        if (ev?.error === "canceled") {
-          setTtsPlaying(false);
-          return;
-        }
-        console.error("TTS error", ev);
-        setTtsPlaying(false);
-        toast.message("Error de síntesis de voz: " + (ev?.error || "desconocido"));
-      };
-
-      // Intenta seleccionar una voz en español si está disponible
-      const voices = window.speechSynthesis.getVoices?.() || [];
-      const esVoice = voices.find((v: SpeechSynthesisVoice) => /es(-|_)?/i.test(v.lang || "")) as SpeechSynthesisVoice | undefined;
-      if (esVoice) u.voice = esVoice;
-
       window.speechSynthesis.speak(u);
+      setTtsPlaying(true);
     } catch (e) {
-      console.error("Error TTS", e);
-      toast.message("No se pudo reproducir voz en este dispositivo.");
-      setTtsPlaying(false);
+      console.error("speak error", e);
+      toast.message("No se pudo reproducir la voz (intenta otro navegador).");
     }
   };
   const speakPause = () => {
     if (!("speechSynthesis" in window)) return;
-    try {
-      if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
-        window.speechSynthesis.pause();
-        setTtsPlaying(false);
-      } else if (window.speechSynthesis.paused) {
-        window.speechSynthesis.resume();
-        setTtsPlaying(true);
-      }
-    } catch (e) {
-      console.warn("TTS pause/resume error", e);
+    if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
+      window.speechSynthesis.pause();
+      setTtsPlaying(false);
+    } else if (window.speechSynthesis.paused) {
+      window.speechSynthesis.resume();
+      setTtsPlaying(true);
     }
   };
   const speakReset = () => {
     if (!("speechSynthesis" in window)) return;
-    try {
-      window.speechSynthesis.cancel();
-    } catch (e) {
-      /* ignore */
-    }
+    window.speechSynthesis.cancel();
     setTtsPlaying(false);
   };
 
@@ -894,13 +885,17 @@ export default function PublicNavigator() {
       };
       setSelectedRoom(roomWithFloor);
 
+      // set building context BEFORE drawing route
+      setCurrentStepBuilding(building as Building);
+      setFirstRouteBuildingImage((building as Building).image_url ?? null);
+
       if (!userLoc) {
         toast.error("Activa el GPS para trazar la ruta a la entrada.");
         return;
       }
       const from = L.latLng(userLoc.lat, userLoc.lng);
       const to = bestEntranceForBuilding((building as Building).id, from);
-      await drawFootRoute(from, to, roomWithFloor);
+      await drawFootRoute(from, to, roomWithFloor, (building as Building).name, (building as Building).image_url ?? null);
     } catch (e) {
       console.error(e);
       toast.error("No se pudo focalizar el espacio");
@@ -1032,35 +1027,26 @@ export default function PublicNavigator() {
     setRouteIdx(0);
     toast.success(`Recorrido: ${r.name}`);
 
-    // limpiar imagen previa y refs prev
+    // limpiar imagen previa
     setFirstRouteBuildingImage(null);
-    setShowBuildingImageOnce(false);
-    firstStepBuildingIdRef.current = null;
-    prevBuildingRef.current = null;
-    prevFloorRef.current = null;
 
     // obtener imagen del primer paso (si tiene building/room con image_url)
     try {
       const firstMeta = await latlngAndMetaOfStep(steps[0]);
       const img = firstMeta.building?.image_url ?? firstMeta.room?.image_url ?? null;
-      if (img) {
-        setFirstRouteBuildingImage(img);
-        // marcar id del building del primer paso para mostrar imagen en modal solo en el primer step de ese edificio
-        if (firstMeta.building?.id) firstStepBuildingIdRef.current = firstMeta.building.id;
-      } else {
-        firstStepBuildingIdRef.current = null;
-      }
+      setFirstRouteBuildingImage(img ?? null);
     } catch (e) {
       console.warn("No pude obtener imagen del primer paso", e);
       setFirstRouteBuildingImage(null);
-      firstStepBuildingIdRef.current = null;
     }
 
     // reiniciar contexto y reproducir primer paso
+    prevStepBuildingIdRef.current = null;
+    prevStepFloorNumberRef.current = null;
     await playCurrentRouteStep(0, r, steps);
   };
 
-  const playCurrentRouteStep = async (idx: number, route: Route, steps: RouteStep[]) => {
+  const playCurrentRouteStep = async (idx: number, route: Route, stepsArr: RouteStep[]) => {
     if (!userLoc) {
       toast.error("Activa el GPS para trazar el recorrido.");
       return;
@@ -1071,7 +1057,7 @@ export default function PublicNavigator() {
       routingRef.current = null;
     }
 
-    const st = steps[idx];
+    const st = stepsArr[idx];
     const meta = await latlngAndMetaOfStep(st);
     if (!meta.ll) {
       toast.message("Paso sin geolocalización. Avanza al siguiente.");
@@ -1082,68 +1068,53 @@ export default function PublicNavigator() {
     setCurrentStepRoom(meta.room);
     setCurrentStepBuilding(meta.building || null);
 
-    // Determinar building / floor actuales
     const currentBuildingId = meta.building?.id || null;
-    const currentFloorNumber = meta.room?.floor?.floor_number ?? null;
+    const prevBuildingId = prevStepBuildingIdRef.current;
+    const prevFloor = prevStepFloorNumberRef.current;
+    const nextFloorNumber = meta.room?.floor?.floor_number ?? null;
 
-    // Decide si este es el primer step del building (con la imagen que guardamos)
-    const isFirstStepForBuilding =
-      firstStepBuildingIdRef.current != null &&
-      currentBuildingId != null &&
-      currentBuildingId === firstStepBuildingIdRef.current &&
-      prevBuildingRef.current == null;
+    const isSameBuildingAsPrev = prevBuildingId !== null && currentBuildingId !== null && currentBuildingId === prevBuildingId;
 
-    if (isFirstStepForBuilding) {
-      setShowBuildingImageOnce(true);
-      // mantendremos la small-card (firstRouteBuildingImage) hasta que el usuario la cierre
-    } else {
-      setShowBuildingImageOnce(false);
-    }
+    // Build header with building name if available
+    const buildingHeader = meta.building ? `Edificio: ${meta.building.name}` : null;
 
-    // Decidir si es intra-bloque (mismo edificio que el previo)
-    const isSameBuildingAsPrev = currentBuildingId != null && currentBuildingId === prevBuildingRef.current;
-    const isSameFloorAsPrev = isSameBuildingAsPrev && currentFloorNumber != null && currentFloorNumber === prevFloorRef.current;
-
-    // Si es intra-bloque: mostrar custom_instruction / no trazar mapa
+    // INTRA-BLOQUE
     if (isSameBuildingAsPrev && (meta.room || st.custom_instruction)) {
-      const linesBase: string[] = st.custom_instruction ? [st.custom_instruction] : [];
-      const lines = (() => {
-        const out = [...linesBase];
-        // solo indicar el piso si no es el mismo piso que ya estábamos
-        if (meta.room?.floor?.floor_number != null && !isSameFloorAsPrev) out.push(`El destino está en el piso ${meta.room.floor.floor_number}.`);
-        const d = (meta.room?.directions || "").trim();
-        if (d) out.push(`Indicaciones adicionales: ${d}`);
-        return out;
-      })();
-      setSteps(lines);
+      const linesBase: string[] = [];
+      if (buildingHeader) linesBase.push(buildingHeader);
+
+      if (nextFloorNumber != null) {
+        if (prevFloor == null || prevFloor !== nextFloorNumber) {
+          linesBase.push(`Sube al piso ${nextFloorNumber}.`);
+        } else {
+          // mismo piso -> no repetir
+        }
+      }
+
+      if (st.custom_instruction) linesBase.push(st.custom_instruction);
+
+      if (meta.room?.directions && !st.custom_instruction) {
+        linesBase.push(`Indicaciones: ${meta.room.directions}`);
+      }
+
+      setSteps(linesBase);
       setNextStepPointer(0);
       setRouteActive(true);
       setStepsOpen(true);
       speakReset();
-      if (lines.length) speakAll(lines);
-      // actualizar prev refs: ahora ya estamos "dentro" del edificio/piso
-      prevBuildingRef.current = currentBuildingId;
-      prevFloorRef.current = currentFloorNumber;
-      // si mostramos la imagen del primer step, desactivar el marcador para no repetirla
-      if (isFirstStepForBuilding) {
-        firstStepBuildingIdRef.current = null;
-      }
+      if (linesBase.length) speakAll(linesBase);
+
+      prevStepBuildingIdRef.current = currentBuildingId;
+      prevStepFloorNumberRef.current = nextFloorNumber;
       return;
     }
 
-    // EXTRA-BLOQUE: trazar ruta
+    // EXTRA-BLOQUE -> trazar ruta
     const fromLL = L.latLng(userLoc.lat, userLoc.lng);
-    await drawFootRoute(fromLL, meta.ll, meta.room || undefined);
+    await drawFootRoute(fromLL, meta.ll, meta.room || undefined, meta.building?.name ?? undefined, meta.building?.image_url ?? undefined);
 
-    // construir instrucciones (turn-by-turn o fallback) será manejado por drawFootRoute / handlers
-    // pero agregamos lógica para la línea de piso si aún no fue añadida por drawFootRoute
-    // drawFootRoute ya pone `setSteps(...)` con el conjunto de instrucciones; ajustaremos después en los handlers.
-    // Guardar prev refs ahora que hemos procesado el paso
-    prevBuildingRef.current = currentBuildingId;
-    prevFloorRef.current = currentFloorNumber;
-    if (isFirstStepForBuilding) {
-      firstStepBuildingIdRef.current = null;
-    }
+    prevStepBuildingIdRef.current = currentBuildingId;
+    prevStepFloorNumberRef.current = nextFloorNumber;
   };
 
   const nextRouteStep = async () => {
@@ -1154,15 +1125,16 @@ export default function PublicNavigator() {
       setRoutePlaying(null);
       setRouteIdx(0);
       clearRouteLayers();
-      // no borramos la small-card automáticamente; el usuario puede ocultarla
-      setShowBuildingImageOnce(false);
+      setFirstRouteBuildingImage(null);
+      prevStepBuildingIdRef.current = null;
+      prevStepFloorNumberRef.current = null;
       return;
     }
     setRouteIdx(next);
     await playCurrentRouteStep(next, routePlaying.route, routePlaying.steps);
   };
 
-  // ====== drawFootRoute (usa routing-machine u OSRM) ======
+  // ====== drawFootRoute (acepta ctxBuildingName/ctxBuildingImage) ======
   const computeTurnPoints = (path: L.LatLng[]) => {
     const pts: L.LatLng[] = [];
     if (path.length < 2) return pts;
@@ -1174,7 +1146,13 @@ export default function PublicNavigator() {
     return pts;
   };
 
-  const drawFootRoute = async (fromLL: L.LatLng, toLL: L.LatLng, roomInfo?: Room) => {
+  const drawFootRoute = async (
+    fromLL: L.LatLng,
+    toLL: L.LatLng,
+    roomInfo?: Room,
+    ctxBuildingName?: string | undefined,
+    ctxBuildingImage?: string | null | undefined
+  ) => {
     if (!mapRef.current) return;
 
     // limpiar antes
@@ -1190,6 +1168,9 @@ export default function PublicNavigator() {
     const ready = await waitForGraphReady();
     setRouteActive(true);
     setStepsOpen(false);
+
+    // set building image for modal top-right if provided
+    if (ctxBuildingImage) setFirstRouteBuildingImage(ctxBuildingImage);
 
     try {
       await import("leaflet-routing-machine");
@@ -1210,14 +1191,16 @@ export default function PublicNavigator() {
             if (d) base.push(`Indicaciones adicionales: ${d}`);
             return base;
           })();
-          setSteps(out);
+
+          const final = ctxBuildingName ? [ `Edificio: ${ctxBuildingName}`, ...out ] : out;
+          setSteps(final);
 
           routePathRef.current = campusPath;
           triggerPtsRef.current = computeTurnPoints(campusPath);
           spokenStepIdxRef.current = -1;
           setNextStepPointer(0);
           speakReset();
-          // NOTE: aquí no forzamos a hablar; el efecto de proximidad hablará
+          setStepsOpen(true);
           return;
         }
       }
@@ -1259,13 +1242,16 @@ export default function PublicNavigator() {
           if (d) base.push(`Indicaciones adicionales: ${d}`);
           return base;
         })();
-        setSteps(out);
+
+        const final = ctxBuildingName ? [ `Edificio: ${ctxBuildingName}`, ...out ] : out;
+        setSteps(final);
 
         routePathRef.current = coords;
         triggerPtsRef.current = computeTurnPoints(coords);
         spokenStepIdxRef.current = -1;
         setNextStepPointer(0);
         speakReset();
+        setStepsOpen(true);
       });
 
       ctrl.on("routingerror", () => {
@@ -1277,13 +1263,16 @@ export default function PublicNavigator() {
         if (roomInfo?.floor?.floor_number != null) insts.push(`El destino está en el piso ${roomInfo.floor.floor_number}.`);
         const d = (roomInfo?.directions || "").trim();
         if (d) insts.push(`Indicaciones adicionales: ${d}`);
-        setSteps(insts);
+
+        const final = ctxBuildingName ? [ `Edificio: ${ctxBuildingName}`, ...insts ] : insts;
+        setSteps(final);
 
         routePathRef.current = [fromLL, toLL];
         triggerPtsRef.current = [toLL];
         spokenStepIdxRef.current = -1;
         setNextStepPointer(0);
         speakReset();
+        setStepsOpen(true);
       });
     } catch (e) {
       console.error(e);
@@ -1293,13 +1282,16 @@ export default function PublicNavigator() {
       if (roomInfo?.floor?.floor_number != null) insts.push(`El destino está en el piso ${roomInfo.floor.floor_number}.`);
       const d = (roomInfo?.directions || "").trim();
       if (d) insts.push(`Indicaciones adicionales: ${d}`);
-      setSteps(insts);
+
+      const final = ctxBuildingName ? [ `Edificio: ${ctxBuildingName}`, ...insts ] : insts;
+      setSteps(final);
 
       routePathRef.current = [fromLL, toLL];
       triggerPtsRef.current = [toLL];
       spokenStepIdxRef.current = -1;
       setNextStepPointer(0);
       speakReset();
+      setStepsOpen(true);
     }
   };
 
@@ -1409,10 +1401,8 @@ export default function PublicNavigator() {
     setCurrentStepRoom(null);
     setCurrentStepBuilding(null);
     setFirstRouteBuildingImage(null);
-    setShowBuildingImageOnce(false);
-    prevBuildingRef.current = null;
-    prevFloorRef.current = null;
-    firstStepBuildingIdRef.current = null;
+    prevStepBuildingIdRef.current = null;
+    prevStepFloorNumberRef.current = null;
   };
 
   // ====== Búsqueda UI / handler ======
@@ -1428,11 +1418,7 @@ export default function PublicNavigator() {
     // Buildings
     const bList = findBuilding(q);
 
-    let hits: Array<
-      | { kind: "room"; room: Room; label: string }
-      | { kind: "landmark"; landmark: Landmark; label: string }
-      | { kind: "building"; building: Building; label: string }
-    > = [
+    const hits: Hit[] = [
       ...rList.map((r) => ({ kind: "room" as const, room: r, label: r.name })),
       ...lList.map((l) => ({ kind: "landmark" as const, landmark: l, label: l.name ?? l.type })),
       ...bList.map((b) => ({ kind: "building" as const, building: b, label: b.name })),
@@ -1457,11 +1443,21 @@ export default function PublicNavigator() {
       return;
     }
 
-    // Si hay varios, tomamos el primero por ahora
-    const h = hits[0];
-    if (h.kind === "room") await focusRoom(h.room);
-    else if (h.kind === "landmark") await focusLandmark(h.landmark);
-    else await handleSelectBuilding(h.building, true);
+    // Si hay varios resultados -> abrir modal scrolleable para selección
+    setSearchHits(hits);
+    setSearchModalOpen(true);
+  };
+
+  // Selección desde modal de búsquedas múltiples
+  const handleSelectHit = async (hit: Hit) => {
+    setSearchModalOpen(false);
+    setTimeout(async () => {
+      if (hit.kind === "room") await focusRoom(hit.room);
+      else if (hit.kind === "landmark") await focusLandmark(hit.landmark);
+      else await handleSelectBuilding(hit.building, true);
+      setSearchHits([]);
+      setQuery("");
+    }, 120);
   };
 
   // ====== UI: render ======
@@ -1625,7 +1621,7 @@ export default function PublicNavigator() {
                 }
                 const from = L.latLng(userLoc.lat, userLoc.lng);
                 const to = bestEntranceForBuilding(selectedBuilding.id, from);
-                drawFootRoute(from, to, selectedRoom ?? undefined);
+                drawFootRoute(from, to, selectedRoom ?? undefined, selectedBuilding.name, selectedBuilding.image_url ?? null);
               }}
             >
               Trazar ruta a la ENTRADA
@@ -1676,14 +1672,27 @@ export default function PublicNavigator() {
       >
         <DialogPortal>
           <DialogOverlay className="fixed inset-0 z-[3000] bg-black/50 backdrop-blur-sm" />
-          <DialogContent className="z-[3001] p-0 max-w-none w-[100vw] sm:w-[720px] h-[85vh] sm:h-auto sm:max-h-[88vh]">
+          <DialogContent className="z-[3001] p-0 max-w-none w-[100vw] sm:w-[720px] h-[85vh] sm:h-auto sm:max-h-[88vh] overflow-hidden">
             <div className="flex flex-col h-full">
-              <DialogHeader className="px-5 pt-4">
+              <DialogHeader className="px-5 pt-4 relative">
                 <DialogTitle>Instrucciones del recorrido</DialogTitle>
                 <DialogDescription>
                   Sigue los pasos en orden. Si estás dentro del mismo edificio, te leeré la
                   instrucción personalizada.
                 </DialogDescription>
+
+                {/* Imagen superior derecha dentro del modal (si existe) */}
+                <div className="absolute right-4 top-4">
+                  {firstRouteBuildingImage ? (
+                    <div className="w-28 h-16 rounded overflow-hidden border bg-muted">
+                      <img src={firstRouteBuildingImage} alt="Edificio inicio" className="w-full h-full object-cover" />
+                    </div>
+                  ) : currentStepBuilding?.image_url ? (
+                    <div className="w-28 h-16 rounded overflow-hidden border bg-muted">
+                      <img src={currentStepBuilding.image_url} alt="Edificio" className="w-full h-full object-cover" />
+                    </div>
+                  ) : null}
+                </div>
               </DialogHeader>
 
               <div className="px-5 pb-3 flex items-center gap-2">
@@ -1704,9 +1713,9 @@ export default function PublicNavigator() {
                 </Button>
               </div>
 
-              {/* Lista de pasos */}
+              {/* Lista de pasos (scroll interno) */}
               {steps.length > 0 && (
-                <div className="px-5 pb-2 overflow-auto">
+                <div className="px-5 pb-2 overflow-auto" style={{ maxHeight: "48vh" }}>
                   <ol className="list-decimal pl-5 space-y-2 text-sm">
                     {steps.slice(nextStepPointer).map((s, i) => (
                       <li key={i}>{s}</li>
@@ -1715,8 +1724,8 @@ export default function PublicNavigator() {
                 </div>
               )}
 
-              {/* Imagen contextual */}
-              <div className="px-5 pb-5">
+              {/* Imagen contextual (imagen del room o edificio) */}
+              <div className="px-5 pb-5 overflow-auto" style={{ maxHeight: "24vh" }}>
                 {currentStepRoom?.image_url ? (
                   <>
                     <div className="text-sm text-muted-foreground mb-2">Imagen del espacio</div>
@@ -1729,7 +1738,7 @@ export default function PublicNavigator() {
                       />
                     </div>
                   </>
-                ) : showBuildingImageOnce && currentStepBuilding?.image_url ? (
+                ) : currentStepBuilding?.image_url ? (
                   <>
                     <div className="text-sm text-muted-foreground mb-2">Imagen del edificio</div>
                     <div className="rounded-lg border bg-muted/40 p-2">
@@ -1741,10 +1750,66 @@ export default function PublicNavigator() {
                       />
                     </div>
                   </>
-                ) : currentStepBuilding?.image_url && !showBuildingImageOnce ? (
-                  // si no es el primer step para el edificio y no hay room image, optar por no mostrar la imagen para evitar repetición
-                  null
                 ) : null}
+              </div>
+            </div>
+          </DialogContent>
+        </DialogPortal>
+      </Dialog>
+
+      {/* Modal de resultados de búsqueda (scrolleable) */}
+      <Dialog open={searchModalOpen} onOpenChange={setSearchModalOpen}>
+        <DialogPortal>
+          <DialogOverlay className="fixed inset-0 z-[3000] bg-black/40" />
+          <DialogContent className="z-[3001] max-w-lg mx-4 sm:mx-auto w-[min(720px,90vw)] max-h-[80vh] overflow-hidden">
+            <div className="flex flex-col h-full">
+              <DialogHeader className="px-4 py-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <DialogTitle>Selecciona un resultado</DialogTitle>
+                    <DialogDescription className="text-sm text-muted-foreground">
+                      La búsqueda devolvió varios resultados. Elige a cuál deseas ir.
+                    </DialogDescription>
+                  </div>
+                  <div>
+                    <Button variant="ghost" size="sm" onClick={() => setSearchModalOpen(false)}>
+                      <X className="w-4 h-4" />
+                    </Button>
+                  </div>
+                </div>
+              </DialogHeader>
+
+              <div className="px-4 pb-4 overflow-auto" style={{ maxHeight: "64vh" }}>
+                {searchHits.length === 0 ? (
+                  <div className="text-sm text-muted-foreground">No hay resultados para mostrar.</div>
+                ) : (
+                  <ul className="space-y-2">
+                    {searchHits.map((h, idx) => (
+                      <li key={idx}>
+                        <button
+                          onClick={() => handleSelectHit(h)}
+                          className="w-full text-left p-3 rounded border hover:bg-accent/10 transition flex items-center gap-3"
+                        >
+                          <div className="flex-1">
+                            <div className="font-medium">
+                              {h.kind === "room" ? `${h.room.name}${h.room.room_number ? ` · ${h.room.room_number}` : ""}` :
+                                h.kind === "building" ? h.building.name :
+                                h.kind === "landmark" ? (h.landmark.name ?? h.landmark.type) : ""}
+                            </div>
+                            <div className="text-xs text-muted-foreground mt-0.5">
+                              {h.kind === "room" ? `Aula / Espacio — Piso ${h.room.floor?.floor_number ?? "?"}` :
+                                h.kind === "building" ? "Edificio" :
+                                h.kind === "landmark" ? `Referencia (${h.landmark.type})` : ""}
+                            </div>
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            Seleccionar
+                          </div>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             </div>
           </DialogContent>
@@ -1770,7 +1835,7 @@ export default function PublicNavigator() {
 
       {/* Modal Login */}
       <Dialog open={loginOpen} onOpenChange={setLoginOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-md max-h-[80vh] overflow-auto">
           <DialogHeader>
             <DialogTitle>Iniciar sesión</DialogTitle>
             <DialogDescription>Accede para ver destinos según tu rol.</DialogDescription>
