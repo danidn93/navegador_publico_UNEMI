@@ -1148,6 +1148,16 @@ export default function PublicNavigator() {
                   {steps.map((s, i) => <li key={i}>{s}</li>)}
                 </ol>
               </div>
+              
+              {/* DIRECTIONS del room (si existe) */}
+              {currentStepRoom?.directions && (
+                <div className="px-5 pb-4">
+                  <div className="text-sm text-muted-foreground mb-2">Indicaciones del espacio</div>
+                  <div className="rounded-lg border bg-muted/40 p-3 text-sm whitespace-pre-wrap">
+                    {currentStepRoom.directions}
+                  </div>
+                </div>
+              )}
 
               {/* IMÁGENES: edificio PRIMERO, luego room. Ambas usando image_url resuelta */}
               <div className="px-5 pb-8">
