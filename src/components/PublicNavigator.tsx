@@ -1,11 +1,9 @@
-// src/components/PublicNavigator.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "leaflet-routing-machine/dist/leaflet-routing-machine.css";
-import { DialogPortal, DialogOverlay } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -19,10 +17,12 @@ import {
   DialogHeader,
   DialogTitle,
   DialogDescription,
+  DialogPortal,
+  DialogOverlay,
 } from "@/components/ui/dialog";
-import { Search, Send, PanelTopOpen, X, MapPin } from "lucide-react";
+import { Search, Send, PanelTopOpen, X, MapPin, LogIn, LogOut, UserCircle2 } from "lucide-react";
 
-// Fix iconos Leaflet
+// Fix iconos Leaflet (si ya lo hiciste en otro sitio, está OK repetir)
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 L.Icon.Default.mergeOptions({
   iconRetinaUrl:
@@ -33,7 +33,7 @@ L.Icon.Default.mergeOptions({
     "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png",
 });
 
-// ======== Utils de normalización para búsquedas robustas ========
+// ======= Helpers de texto/normalización =======
 const norm = (s: string) =>
   (s || "")
     .toLowerCase()
@@ -41,55 +41,19 @@ const norm = (s: string) =>
     .replace(/[\u0300-\u036f]/g, "")
     .trim();
 
+const normAlnum = (s: string) => norm(s).replace(/[^\p{L}\p{N}]/gu, "");
+
 const tokenize = (s: string) =>
   norm(s)
     .split(/\s+/)
-    .map(t => t.replace(/[^\p{L}\p{N}]/gu, ""))
-    // ✅ Mantener números aunque sean de 1 dígito (ej: "1")
-    .filter(t => t.length >= 2 || /^\d+$/.test(t));
+    .map((t) => t.replace(/[^\p{L}\p{N}]/gu, ""))
+    .filter((t) => t.length >= 2 || /^\d+$/.test(t));
 
+const strongTokensOf = (tokens: string[]) => tokens.filter((t) => t.length >= 3 || /^\d+$/.test(t));
 
-// ¿El texto contiene TODOS los tokens (comparando todo sin signos)?
-const matchAllTokens = (haystack: string, tokens: string[]) => {
-  const H = normAlnum(haystack);
-  return tokens.every(t => H.includes(t));
-};
+const UNEMI_CENTER: [number, number] = [-2.14898719, -79.60420553];
 
-// ¿El texto contiene ALGUNO de los tokens?
-const matchAnyToken = (haystack: string, tokens: string[]) => {
-  const H = normAlnum(haystack);
-  return tokens.some(t => H.includes(t));
-};
-
-// --- Stopwords + tokens fuertes (para evitar falsos positivos tipo “un” -> BIOUNEMI)
-const STOPWORDS_ES = new Set([
-  "a","al","del","de","la","las","el","los","un","una","unos","unas",
-  "y","o","u","que","como","donde","cuando","cuanto","cual","cuales",
-  "por","para","en","con","sin","sobre","entre","hasta","desde",
-  "puedo","puedes","puede","quiero","quieres","quiere","pedir","pido",
-  "me","mi","mis","su","sus","tu","tus","lo","le","les","se",
-  "queda","quedo","quedan","quedó","quedar","quedara","quedará","quedaria","quedaría",
-  "ir","voy","vas","va","vamos","van","llegar","llego","llegas","llega","llegamos","llegan",
-  "llevar","llevo","llevas","lleva","llevamos","llevan",
-  "aqui","aquí","alli","allí","aca","acá","ahi","ahí",
-  "edificio","bloque","aula","laboratorio","taller","oficina","facultad","departamento",
-  "referencia","plazoleta","bar","corredor","otro",
-  "examen","exámenes","examenes","exámen","exámenes",
-  "dar","doy","das","da","damos","dan",
-  "hacer","hago","haces","hace","hacemos","hacen",
-  "tomar","tomo","tomas","toma","tomamos","toman",
-  "rendir","rindo","rindes","rinde","rendimos","rinden",
-  "examen","exámen","evaluacion","evaluación","prueba","test","ehep"
-]);
-
-const normAlnum = (s: string) =>
-  norm(s).replace(/[^\p{L}\p{N}]/gu, "");
-
-const strongTokensOf = (tokens: string[]) =>
-  tokens.filter(t =>
-    !STOPWORDS_ES.has(t) && (t.length >= 3 || /^\d+$/.test(t))
-  );
-
+// ======= Tipos =======
 type BuildingState = "HABILITADO" | "REPARACIÓN";
 type Building = {
   id: string;
@@ -100,6 +64,7 @@ type Building = {
   total_floors: number;
   building_code: string | null;
   state: BuildingState;
+  image_url?: string | null;
 };
 
 type Floor = {
@@ -121,6 +86,9 @@ type Room = {
   equipment?: string[] | null;
   keywords?: string[] | null;
   actividades?: string[] | null;
+  target?: "public" | "student" | "admin";
+  image_url?: string | null;
+  map_image_path?: string | null;
   floor?: { id: string; floor_number: number };
 };
 
@@ -143,60 +111,25 @@ type Landmark = {
   name: string | null;
   type: "plazoleta" | "bar" | "corredor" | "otro";
   location: { type: "Point"; coordinates: [number, number] };
+  building_id?: string | null;
 };
 
-const UNEMI_CENTER: [number, number] = [-2.14898719, -79.60420553];
-
-const CATEGORY_WORDS = [
-  "bloque",
-  "aula",
-  "laboratorio",
-  "taller",
-  "oficina",
-  "facultad",
-  "departamento",
-  "referencia",
-  "plazoleta",
-  "bar",
-  "corredor",
-];
-
-// --- Fast-path para "Aula N"
-const AULA_RE = /\baula\s*0*(\d+)\b/i;
-
-const extractAulaNumber = (q: string): number | null => {
-  const m = norm(q).match(/\baula\s*0*(\d+)\b/);
-  return m ? parseInt(m[1], 10) : null;
+type Route = { id: string; name: string; description: string | null; is_active: boolean };
+type RouteStep = {
+  id: string;
+  route_id: string;
+  order_index: number;
+  custom_instruction: string | null;
+  room_id: string | null;
+  landmark_id: string | null;
+  entrance_id: string | null;
+  footway_id: string | null;
+  parking_id: string | null;
 };
 
-const nameHasAulaPhrase = (name: string, n: number) => {
-  // Coincidencia robusta: "aula 1", "aula   01", con límites de palabra
-  const rx = new RegExp(`\\baula\\s*0*${n}\\b`, "i");
-  return rx.test(name);
-};
-
-// Términos que obligan a elegir el más cercano automáticamente
-const NEAREST_TERMS = [
-  // baños
-  "baño","baños","banio","banios","sanitario","sanitarios","servicio higienico","servicios higienicos",
-  "wc","toilet",
-  // bar / cafetería
-  "bar","cafeteria","cafetería","café",
-  // tienda / kiosko
-  "tienda","kiosco","kiosko","bazar","minimarket"
-];
-
-const queryAsksNearest = (q: string) => {
-  const s = norm(q);
-  return NEAREST_TERMS.some(t => s.includes(norm(t)));
-};
-
-
-type ChatMsg = { role: "assistant" | "user"; text: string };
-
+// ======= Utilidades geoespaciales / grafo =======
 const haversine = (a: L.LatLngExpression, b: L.LatLngExpression) =>
   L.latLng(a).distanceTo(L.latLng(b));
-
 const keyOf = (lat: number, lng: number) => `${lat.toFixed(6)},${lng.toFixed(6)}`;
 
 type NodeId = string;
@@ -260,14 +193,11 @@ function integrateProjection(
 }
 
 function turnDirection(prev: L.LatLng, cur: L.LatLng, next: L.LatLng) {
-  const v1x = cur.lng - prev.lng,
-    v1y = cur.lat - prev.lat;
-  const v2x = next.lng - cur.lng,
-    v2y = next.lat - cur.lat;
+  const v1x = cur.lng - prev.lng, v1y = cur.lat - prev.lat;
+  const v2x = next.lng - cur.lng, v2y = next.lat - cur.lat;
   const cross = v1x * v2y - v1y * v2x;
   const dot = v1x * v2x + v1y * v2y;
-  const mag1 = Math.hypot(v1x, v1y),
-    mag2 = Math.hypot(v2x, v2y);
+  const mag1 = Math.hypot(v1x, v1y), mag2 = Math.hypot(v2x, v2y);
   const cos = dot / (mag1 * mag2 || 1);
   const angle = Math.acos(Math.max(-1, Math.min(1, cos)));
   if (angle < (15 * Math.PI) / 180) return null;
@@ -293,8 +223,7 @@ function buildTurnByTurn(path: L.LatLng[], destino?: L.LatLng): string[] {
   }
   if (distAcc > 0) steps.push(`Continúa ${Math.round(distAcc)} m hasta la entrada.`);
   if (destino && path.length >= 2) {
-    const a = path[path.length - 2],
-      b = path[path.length - 1];
+    const a = path[path.length - 2], b = path[path.length - 1];
     const seg = L.latLng(b.lat - a.lat, b.lng - a.lng);
     const toDest = L.latLng(destino.lat - b.lat, destino.lng - b.lng);
     const cross = seg.lng * toDest.lat - seg.lat * toDest.lng;
@@ -304,50 +233,23 @@ function buildTurnByTurn(path: L.LatLng[], destino?: L.LatLng): string[] {
   return steps;
 }
 
-// ---- Compartir ubicación ----
-function buildShareUrl(lat: number, lng: number, zoom?: number) {
-  const base = `${window.location.origin}${window.location.pathname}`;
-  const z = zoom != null ? `&z=${zoom}` : "";
-  return `${base}?lat=${lat.toFixed(6)}&lng=${lng.toFixed(6)}${z}`;
-}
-async function copyToClipboard(text: string) {
-  try {
-    await navigator.clipboard.writeText(text);
-    toast.success("Enlace copiado al portapapeles");
-  } catch {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand("copy");
-    document.body.removeChild(ta);
-    toast.success("Enlace copiado");
-  }
-}
-
-/** === Tipos/estado para resultados múltiples === */
-type SearchHitBase = { label: string; sub?: string; distanceMeters?: number };
-type SearchHit =
-  | ({ kind: "room"; room: Room } & SearchHitBase)
-  | ({ kind: "building"; building: Building } & SearchHitBase)
-  | ({ kind: "landmark"; landmark: Landmark } & SearchHitBase);
-
-
+// ======= Componente =======
 export default function PublicNavigator() {
-  // ======= Estado base
+  // Estados básicos
   const [query, setQuery] = useState("");
   const [userLoc, setUserLoc] = useState<{ lat: number; lng: number } | null>(null);
   const [gpsDenied, setGpsDenied] = useState(false);
+  const gpsFollow = true;
 
-  const gpsFollow = true; // sigue el GPS
+  // Auth simple
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [appUser, setAppUser] = useState<{ id: number; usuario: string; role: "guest" | "student" | "admin" } | null>(null);
 
-  const [isAdmin, setIsAdmin] = useState(false);
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setIsAdmin(!!data.session));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setIsAdmin(!!s));
-    return () => sub.subscription?.unsubscribe?.();
-  }, []);
-
+  // Datos
   const [buildings, setBuildings] = useState<Building[]>([]);
   const [selectedBuilding, setSelectedBuilding] = useState<Building | null>(null);
   const [buildingFloors, setBuildingFloors] = useState<Floor[]>([]);
@@ -358,11 +260,9 @@ export default function PublicNavigator() {
   const [entrances, setEntrances] = useState<Entrance[]>([]);
   const [landmarks, setLandmarks] = useState<Landmark[]>([]);
 
+  // Grafo
   const graphRef = useRef<Map<NodeId, Node> | null>(null);
   const segmentsRef = useRef<Segment[] | null>(null);
-
-  // Punto compartido (?lat&lng)
-  const [sharedTarget, setSharedTarget] = useState<L.LatLng | null>(null);
 
   // Mapa
   const mapContainer = useRef<HTMLDivElement>(null);
@@ -371,9 +271,9 @@ export default function PublicNavigator() {
   const routingRef = useRef<any>(null);
   const userMarkerRef = useRef<L.Marker | null>(null);
   const buildingNoteRef = useRef<L.Tooltip | null>(null);
-
   const routeLayerRef = useRef<L.Layer | null>(null);
 
+  // Mascota icon
   const walkerRef = useRef<L.Marker | null>(null);
   const walkerIcon = L.icon({
     iconUrl: "/mascota-unemi.png",
@@ -382,49 +282,89 @@ export default function PublicNavigator() {
     tooltipAnchor: [0, -60],
   });
 
-  // Guía
+  // Guía / TTS
   const [steps, setSteps] = useState<string[]>([]);
   const [ttsPlaying, setTtsPlaying] = useState(false);
   const [nextStepPointer, setNextStepPointer] = useState(0);
-
-  // Navegación responsiva
   const [routeActive, setRouteActive] = useState(false);
   const [stepsOpen, setStepsOpen] = useState(false);
 
-  // Chat
-  const [chatOpen, setChatOpen] = useState(false);
-  const [chatMsgs, setChatMsgs] = useState<ChatMsg[]>([
-    {
-      role: "assistant",
-      text: "Hola 👋 ¿A qué edificio, espacio o referencia quieres ir? (Ej: “Bloque R”, “Dirección de TICs” o “plazoleta central”).",
-    },
-  ]);
-  const [chatInput, setChatInput] = useState("");
-  const chatInputRef = useRef<HTMLInputElement | null>(null);
+  // Recorridos
+  const [routePlaying, setRoutePlaying] = useState<{ route: Route; steps: RouteStep[] } | null>(null);
+  const [routeIdx, setRouteIdx] = useState(0);
 
-  // Resultados múltiples
-  const [resultsOpen, setResultsOpen] = useState(false);
-  const [resultHits, setResultHits] = useState<SearchHit[]>([]);
+  // Contexto visual del paso actual
+  const [currentStepRoom, setCurrentStepRoom] = useState<Room | null>(null);
+  const [currentStepBuilding, setCurrentStepBuilding] = useState<Building | null>(null);
 
+  // Imagen del primer edificio del recorrido (nuevo requerimiento)
+  const [firstRouteBuildingImage, setFirstRouteBuildingImage] = useState<string | null>(null);
+
+  // Mostrar la imagen del edificio solo en el primer step de ese edificio (modal)
+  const [showBuildingImageOnce, setShowBuildingImageOnce] = useState(false);
+
+  // Refs para ruteo por voz
+  const routePathRef = useRef<L.LatLng[] | null>(null);
+  const triggerPtsRef = useRef<L.LatLng[]>([]);
+  const spokenStepIdxRef = useRef<number>(-1);
+  const lastSpeakTsRef = useRef<number>(0);
+
+  // Refs para trackear building/floor previos y primer step building id
+  const prevBuildingRef = useRef<string | null>(null);
+  const prevFloorRef = useRef<number | null>(null);
+  const firstStepBuildingIdRef = useRef<string | null>(null);
+
+  // Cargar sesión simple desde localStorage (si la usas)
   useEffect(() => {
-    if (chatOpen) {
-      const t = setTimeout(() => chatInputRef.current?.focus(), 50);
-      return () => clearTimeout(t);
+    const raw = localStorage.getItem("appUser");
+    if (raw) {
+      try {
+        const u = JSON.parse(raw);
+        if (u?.role) setAppUser(u);
+      } catch {}
     }
-  }, [chatOpen]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "/") {
-        e.preventDefault();
-        setChatOpen(true);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // ====== INIT: GPS + datos
+  // LOGIN / LOGOUT
+  const doLogout = () => {
+    setAppUser(null);
+    localStorage.removeItem("appUser");
+    toast.message("Sesión cerrada.");
+  };
+
+  const doLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setAuthLoading(true);
+    try {
+      const { data, error } = await (supabase as any).rpc("verify_user", {
+        p_usuario: username,
+        p_password: password,
+      });
+      if (error) throw error;
+      const row = (Array.isArray(data) ? data[0] : data) as { id: number; usuario: string; role: string } | undefined;
+      if (!row) {
+        setAuthError("Usuario o contraseña incorrectos.");
+      } else {
+        const r = row.role?.toLowerCase() === "admin" || row.role?.toLowerCase() === "super_admin"
+          ? "admin"
+          : row.role?.toLowerCase() === "student" || row.role?.toLowerCase() === "editor" || row.role?.toLowerCase() === "viewer"
+            ? "student"
+            : "guest";
+        const u = { id: row.id, usuario: row.usuario, role: r as "guest" | "student" | "admin" };
+        setAppUser(u);
+        localStorage.setItem("appUser", JSON.stringify(u));
+        setLoginOpen(false);
+        toast.success(`Hola ${u.usuario}! Rol: ${u.role}`);
+      }
+    } catch (err: any) {
+      setAuthError(err?.message || "No se pudo iniciar sesión.");
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  // INIT: GPS + carga datos
   useEffect(() => {
     if ("geolocation" in navigator) {
       navigator.geolocation.watchPosition(
@@ -438,9 +378,9 @@ export default function PublicNavigator() {
     } else setGpsDenied(true);
 
     (async () => {
-      const { data, error } = await supabase
+      const { data, error } = await (supabase as any)
         .from("buildings")
-        .select("id,name,description,latitude,longitude,total_floors,building_code,state")
+        .select("id,name,description,latitude,longitude,total_floors,building_code,state,image_url")
         .eq("state", "HABILITADO")
         .order("name", { ascending: true });
       if (error) toast.error("Error cargando edificios");
@@ -448,7 +388,7 @@ export default function PublicNavigator() {
     })();
 
     (async () => {
-      const { data, error } = await supabase
+      const { data, error } = await (supabase as any)
         .from("footways")
         .select("id,state,geom")
         .eq("state", "ABIERTO");
@@ -464,7 +404,7 @@ export default function PublicNavigator() {
     })();
 
     (async () => {
-      const { data, error } = await supabase
+      const { data, error } = await (supabase as any)
         .from("entrances")
         .select("id,building_id,name,type,location");
       if (error) toast.error("No se pudieron cargar las entradas");
@@ -472,15 +412,16 @@ export default function PublicNavigator() {
     })();
 
     (async () => {
-      const { data, error } = await supabase
+      const { data, error } = await (supabase as any)
         .from("landmarks")
-        .select("id,name,type,location");
+        .select("id,name,type,location,building_id");
       if (error) toast.error("No se pudieron cargar las referencias");
       else setLandmarks((data || []) as Landmark[]);
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ====== MAP: crear/limpiar ======
+  // MAP: crea mapa
   useEffect(() => {
     if (!mapContainer.current || mapRef.current) return;
 
@@ -492,7 +433,7 @@ export default function PublicNavigator() {
 
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: "© OpenStreetMap contributors",
-      maxZoom: 20,
+      maxZoom: 19,
     }).addTo(map);
 
     addBuildingMarkers();
@@ -511,33 +452,15 @@ export default function PublicNavigator() {
       mapRef.current.remove();
       mapRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // URL compartida (?lat & ?lng)
-  useEffect(() => {
-    if (!mapRef.current) return;
-    try {
-      const sp = new URLSearchParams(window.location.search);
-      const lat = parseFloat(sp.get("lat") || "");
-      const lng = parseFloat(sp.get("lng") || "");
-      const z = parseInt(sp.get("z") || "", 10);
-      if (!isNaN(lat) && !isNaN(lng)) {
-        const pt = L.latLng(lat, lng);
-        setSharedTarget(pt);
-        mapRef.current.setView(pt, !isNaN(z) ? z : 18, { animate: true });
-        const m = L.marker(pt, { title: "Punto compartido" }).addTo(mapRef.current);
-        m.bindPopup("<b>Punto compartido</b>").openPopup();
-      }
-    } catch {}
-  }, [mapRef.current]);
-
+  // add markers cuando cambian buildings
   useEffect(() => {
     addBuildingMarkers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [buildings]);
 
-  // marcador de usuario + mascota
+  // marcador usuario + mascota
   useEffect(() => {
     if (!mapRef.current || !userLoc) return;
 
@@ -567,6 +490,7 @@ export default function PublicNavigator() {
     }
   }, [userLoc, gpsFollow]);
 
+  // addBuildingMarkers
   const addBuildingMarkers = () => {
     if (!mapRef.current) return;
     markersRef.current.forEach((m) => mapRef.current?.removeLayer(m));
@@ -575,9 +499,9 @@ export default function PublicNavigator() {
     buildings.forEach((b) => {
       const customIcon = L.divIcon({
         className: "custom-building-marker",
-        html: `<div class="bg-primary text-primary-foreground rounded-full w-8 h-8 flex items-center justify-center text-sm font-bold shadow-lg border-2 border-background">${b.total_floors}</div>`,
-        iconSize: [32, 32],
-        iconAnchor: [16, 16],
+        html: `<div class="bg-primary text-primary-foreground rounded-full w-3.5 h-3.5 shadow-lg border-2 border-background"></div>`,
+        iconSize: [16, 16],
+        iconAnchor: [8, 8],
       });
 
       const marker = L.marker([b.latitude, b.longitude], {
@@ -588,75 +512,49 @@ export default function PublicNavigator() {
       markersRef.current.push(marker);
     });
   };
-  // ====== Búsqueda (NLP simple)
-  const parseIntent = (raw: string) => {
-    const s = norm(raw);
-    const re =
-      /como\s+llego\s+(?:al|a\s+la)\s+(bloque|aula|laboratorio|taller|oficina|facultad|departamento|referencia|plazoleta|bar|corredor)\s+(.+)/i;
-    const m = s.match(re);
-    if (m) return { category: m[1], term: m[2].trim() };
-    for (const cat of CATEGORY_WORDS) {
-      const i = s.indexOf(cat + " ");
-      if (i >= 0) return { category: cat, term: s.slice(i + cat.length).trim() };
-    }
-    return { category: null as string | null, term: s };
-  };
 
-  // ==== Buildings con strongTokens (evita falsos positivos tipo "un" -> BIOUNEMI)
+  // ====== Búsqueda (rooms/buildings/landmarks) ======
   const findBuilding = (termRaw: string): Building[] => {
     let t = norm(termRaw).replace(/^bloque\s+/, "");
     const tokens = tokenize(t);
     const strong = strongTokensOf(tokens);
-
-    if (strong.length === 0) {
-      // Sin tokens fuertes evitamos “relajar” para no traer coincidencias por subcadenas débiles
-      return [];
-    }
-
-    // 1) TODOS los strongTokens
+    if (strong.length === 0) return [];
     const strict = buildings.filter((b) => {
       const label = `${b.name} ${b.building_code ?? ""}`;
-      return matchAllTokens(label, strong);
+      return strong.every((t) => normAlnum(label).includes(t));
     });
     if (strict.length > 0) return strict;
-
-    // 2) ALGUNO de los strongTokens (relajado, pero sin stopwords)
     return buildings.filter((b) => {
       const label = `${b.name} ${b.building_code ?? ""}`;
-      return matchAnyToken(label, strong);
+      return strong.some((t) => normAlnum(label).includes(t));
     });
   };
 
-  // ==== Rooms con strongTokens y filtro final robusto
-  const findRooms = async (termRaw: string, category: string | null): Promise<Room[]> => {
+  const findRooms = async (termRaw: string): Promise<Room[]> => {
     const raw = termRaw.trim();
     const tokens = tokenize(raw);
     const strong = strongTokensOf(tokens);
 
     const kwArray = `{${(strong.length > 0 ? strong : tokens).join(",")}}`;
-
     const orParts: string[] = [
       `name.ilike.%${raw}%`,
       `room_number.ilike.%${raw}%`,
     ];
-
-    // tokens parciales en name/room_number
     (strong.length > 0 ? strong : tokens).forEach((tok) => {
       orParts.push(`name.ilike.%${tok}%`);
       orParts.push(`room_number.ilike.%${tok}%`);
     });
-
-    // arrays por overlaps (keywords/actividades)
     if ((strong.length > 0 ? strong : tokens).length > 0) {
       orParts.push(`keywords.ov.${kwArray}`);
       orParts.push(`actividades.ov.${kwArray}`);
     }
 
-    const { data, error } = await supabase
+    const allowed = ["public", "student", "admin"].slice(0, 1 + (appUser?.role === "student" ? 1 : 0) + (appUser?.role === "admin" ? 1 : 0));
+
+    const { data, error } = await (supabase as any)
       .from("rooms")
-      .select(
-        "id,floor_id,name,room_number,description,directions,room_type_id,capacity,equipment,keywords,actividades"
-      )
+      .select("id,floor_id,name,room_number,description,directions,room_type_id,capacity,equipment,keywords,actividades,target,image_url,map_image_path")
+      .in("target", allowed)
       .or(orParts.join(","))
       .limit(200);
 
@@ -667,13 +565,8 @@ export default function PublicNavigator() {
     }
 
     const baseTokens = (strong.length > 0 ? strong : tokens);
+    if (baseTokens.length === 0) return (data || []) as Room[];
 
-    // ⚠️ Si no hay tokens (caso "Aula 1" → sólo "1" y se perdió), NO filtres nada.
-    if (baseTokens.length === 0) {
-      return (data || []) as Room[];
-    }
-
-    // Filtro estricto
     const filteredStrict = (data || []).filter((r: any) => {
       const bag = [
         r.name ?? "",
@@ -683,45 +576,31 @@ export default function PublicNavigator() {
         ...(r.actividades ?? []),
       ].join(" ");
       return strong.length > 0
-        ? matchAllTokens(bag, strong)
-        : matchAnyToken(bag, tokens);
+        ? strong.every((t) => normAlnum(bag).includes(t))
+        : baseTokens.some((t) => normAlnum(bag).includes(t));
     }) as Room[];
 
-    // Fallback relajado si no hubo match estricto
-    const filtered = filteredStrict.length > 0
-      ? filteredStrict
-      : ((data || []).filter((r: any) => {
-          const bag = [
-            r.name ?? "",
-            r.room_number ?? "",
-            r.description ?? "",
-            ...(r.keywords ?? []),
-            ...(r.actividades ?? []),
-          ].join(" ");
-          return matchAnyToken(bag, baseTokens);
-        }) as Room[]);
+    if (filteredStrict.length > 0) return filteredStrict;
 
-    // Priorización por categoría (si aplica)
-    if (category && !["bloque", "referencia", "plazoleta", "bar", "corredor"].includes(category)) {
-      const cat = norm(category);
-      filtered.sort((a, b) => {
-        const aHit = norm(`${a.name} ${a.room_number ?? ""}`).includes(cat) ? 1 : 0;
-        const bHit = norm(`${b.name} ${b.room_number ?? ""}`).includes(cat) ? 1 : 0;
-        return bHit - aHit;
-      });
-    }
-
-    return filtered;
+    return ((data || []).filter((r: any) => {
+      const bag = [
+        r.name ?? "",
+        r.room_number ?? "",
+        r.description ?? "",
+        ...(r.keywords ?? []),
+        ...(r.actividades ?? []),
+      ].join(" ");
+      return baseTokens.some((t) => normAlnum(bag).includes(t));
+    }) as Room[]);
   };
 
-  // ==== Landmarks por name/type con strongTokens
   const findLandmarksMany = async (termRaw: string): Promise<Landmark[]> => {
     const tokens = tokenize(termRaw);
     const strong = strongTokensOf(tokens);
 
-    const { data, error } = await supabase
+    const { data, error } = await (supabase as any)
       .from("landmarks")
-      .select("id,name,type,location")
+      .select("id,name,type,location,building_id")
       .limit(200);
 
     if (error) {
@@ -732,208 +611,11 @@ export default function PublicNavigator() {
     const list = (data || []) as Landmark[];
     return list.filter((lm) => {
       const label = `${lm.name ?? ""} ${lm.type}`;
-      return strong.length > 0 ? matchAllTokens(label, strong) : matchAnyToken(label, tokens);
+      return strong.length > 0 ? strong.every((t) => normAlnum(label).includes(t)) : tokens.some((t) => normAlnum(label).includes(t));
     });
   };
 
-  const makeRoomHit = (r: Room): SearchHit =>
-    ({ kind: "room" as const, room: r, label: r.name, sub: r.description ?? undefined });
-
-  const makeLandmarkHit = (l: Landmark): SearchHit =>
-    ({ kind: "landmark" as const, landmark: l, label: l.name ?? l.type });
-
-  const makeBuildingHit = (b: Building): SearchHit =>
-    ({ kind: "building" as const, building: b, label: b.name });
-
-  // ======= Búsqueda unificada con lista de resultados (rooms > landmarks > buildings)
-  const handleSearch = async (e?: React.FormEvent, custom?: string) => {
-    e?.preventDefault();
-    const q = (custom ?? query).trim();
-    if (!q) return;
-
-    const { category, term } = parseIntent(q);
-
-    // 1) Buildings
-    const bList = !category || category === "bloque" ? findBuilding(term) : [];
-
-    // 2) Rooms
-    const rList = await findRooms(
-      term,
-      category && !["bloque", "referencia", "plazoleta", "bar", "corredor"].includes(category)
-        ? category
-        : null
-    );
-
-    // 3) Landmarks
-    const lList = await findLandmarksMany(term);
-
-    // Prioridad: rooms > landmarks > buildings (luego ordenaremos por distancia si aplica)
-    let hits: SearchHit[] = [
-      ...rList.map(makeRoomHit),
-      ...lList.map(makeLandmarkHit),
-      ...bList.map(makeBuildingHit),
-    ];
-
-
-    if (hits.length === 0) {
-      toast.error("Sin resultados");
-      pushAssistant('No encontré resultados. Prueba “Bloque CRAI”, “Aula 201”, “Secretaría General” o “plazoleta principal”.');
-      return;
-    }
-
-    const hDistance = (h: SearchHit) => (typeof h.distanceMeters === "number" ? h.distanceMeters : Number.POSITIVE_INFINITY);
-
-    // Enriquecer con distancia si hay GPS y ordenar por distancia
-    hits = await enrichHitsWithDistance(hits, userLoc);
-    const haveDistances = hits.some(h => typeof h.distanceMeters === "number");
-    if (haveDistances) {
-      hits.sort((a, b) => {
-        const da = a.distanceMeters ?? Number.POSITIVE_INFINITY;
-        const db = b.distanceMeters ?? Number.POSITIVE_INFINITY;
-        
-        return da - db;
-      });
-    }
-
-    const scoreRoomForAulaPhrase = (r: Room, aulaN: number) => {
-      const nm = r.name ?? "";
-      let s = 0;
-      if (nameHasAulaPhrase(nm, aulaN)) s += 1000;           // match exacto por frase en name
-      // Puedes añadir reglas extra si quieres:
-      // if ((r.room_number ?? "").includes(String(aulaN))) s += 100;
-      return s;
-    };
-
-    const aulaN = extractAulaNumber(q);
-    if (aulaN != null) {
-      let aulaRooms = hits
-        .filter(h => h.kind === "room" && nameHasAulaPhrase((h as any).room.name ?? "", aulaN)) as Extract<typeof hits[number], { kind: "room" }>[];
-
-      if (aulaRooms.length > 0) {
-        // Ordena por distancia (si hay) y por score de frase exacta
-        aulaRooms = aulaRooms
-          .map(h => ({
-            h,
-            score: scoreRoomForAulaPhrase(h.room, aulaN)
-          }))
-          .sort((a, b) => {
-            // primero mayor score
-            if (b.score !== a.score) return b.score - a.score;
-            // luego menor distancia si existe
-            const da = hDistance(a.h);
-            const db = hDistance(b.h);
-            return da - db;
-          })
-          .map(x => x.h);
-
-        // Ir directo al mejor match
-        await resolveHit(aulaRooms[0]);
-        return;
-      }
-    }
-    
-    // Si la consulta pide explícitamente "lo más cercano" (baños/bar/tienda), auto-ir al primero
-    if (queryAsksNearest(q) && haveDistances) {
-      await resolveHit(hits[0]); // el más cercano
-      return;
-    }
-
-    // Evita autoseleccionar un building por tokens débiles
-    const tokens = tokenize(q);
-    const strong = strongTokensOf(tokens);
-    if (hits.length === 1 && hits[0].kind === "building" && strong.length === 0) {
-      setResultHits(hits);
-      setResultsOpen(true);
-      return;
-    }
-
-    if (hits.length === 1) {
-      await resolveHit(hits[0]);
-      return;
-    }
-
-    // varios resultados → mostrar diálogo
-    setResultHits(hits);
-    setResultsOpen(true);
-  };
-
-  // Resolver un resultado elegido
-  const resolveHit = async (hit: SearchHit) => {
-    setResultsOpen(false);
-    if (hit.kind === "building") {
-      await handleSelectBuilding(hit.building, true);
-      pushAssistant(`Te llevo al bloque: ${hit.building.name}.`);
-      return;
-    }
-    if (hit.kind === "landmark") {
-      await focusLandmark(hit.landmark);
-      pushAssistant(`Perfecto, te llevo a: ${hit.label}.`);
-      return;
-    }
-    if (hit.kind === "room") {
-      await focusRoom(hit.room);
-      pushAssistant(`Listo, te muestro la ruta hacia: ${hit.label}.`);
-      return;
-    }
-  };
-
-  // ====== Select building / rooms
-  const handleSelectBuilding = async (b: Building, fit = false) => {
-    setSelectedBuilding(b);
-    setSelectedRoom(null);
-
-    if (mapRef.current && fit) {
-      mapRef.current.setView([b.latitude, b.longitude], 18, { animate: true });
-      L.popup()
-        .setLatLng([b.latitude, b.longitude])
-        .setContent(`<b>${b.name}</b>`)
-        .openOn(mapRef.current);
-    }
-    await loadFloorsAndRooms(b.id);
-  };
-
-  const loadFloorsAndRooms = async (buildingId: string) => {
-    try {
-      const { data: floors, error: floorsErr } = await supabase
-        .from("floors")
-        .select("id,building_id,floor_number,floor_name")
-        .eq("building_id", buildingId)
-        .order("floor_number", { ascending: true });
-      if (floorsErr) throw floorsErr;
-      setBuildingFloors((floors || []) as Floor[]);
-
-      const floorIds = (floors || []).map((f) => f.id);
-      if (floorIds.length === 0) {
-        setBuildingRooms([]);
-        return;
-      }
-
-      const { data: rooms, error: roomsErr } = await supabase
-        .from("rooms")
-        .select(
-          "id,floor_id,name,room_number,description,directions,room_type_id,capacity,equipment,keywords,actividades"
-        )
-        .in("floor_id", floorIds)
-        .order("name", { ascending: true });
-      if (roomsErr) throw roomsErr;
-
-      const fMap = new Map<string, Floor>();
-      (floors || []).forEach((f) => fMap.set(f.id, f as Floor));
-      const enhanced = (rooms || []).map((r) => ({
-        ...r,
-        floor: fMap.get(r.floor_id)
-          ? { id: r.floor_id, floor_number: fMap.get(r.floor_id)!.floor_number }
-          : undefined,
-      })) as Room[];
-
-      setBuildingRooms(enhanced);
-    } catch (e) {
-      console.error(e);
-      toast.error("Error cargando pisos/rooms");
-    }
-  };
-
-  // ====== Grafo Footways (ruteo peatonal interno)
+  // ====== Grafos y ruteo (mismo que antes) ======
   const buildGraphAndSegments = (foot: Footway[]) => {
     const G = new Map<NodeId, Node>();
     const segs: Segment[] = [];
@@ -976,8 +658,7 @@ export default function PublicNavigator() {
 
   const astar = (G: Map<NodeId, Node>, start: NodeId, goal: NodeId): NodeId[] | null => {
     const h = (a: NodeId, b: NodeId) => {
-      const A = G.get(a)!,
-        B = G.get(b)!;
+      const A = G.get(a)!, B = G.get(b)!;
       return L.latLng(A.lat, A.lng).distanceTo([B.lat, B.lng]);
     };
     const open = new Set<NodeId>([start]);
@@ -985,14 +666,10 @@ export default function PublicNavigator() {
     const g = new Map<NodeId, number>([[start, 0]]);
     const f = new Map<NodeId, number>([[start, h(start, goal)]]);
     const pop = () => {
-      let best: NodeId | null = null,
-        bestF = Infinity;
+      let best: NodeId | null = null, bestF = Infinity;
       for (const id of open) {
         const curF = f.get(id) ?? Infinity;
-        if (curF < bestF) {
-          bestF = curF;
-          best = id;
-        }
+        if (curF < bestF) { bestF = curF; best = id; }
       }
       if (best) open.delete(best);
       return best;
@@ -1062,92 +739,145 @@ export default function PublicNavigator() {
     list.forEach((e) => {
       const [lng, lat] = e.location.coordinates;
       const d = fromLL.distanceTo([lat, lng]);
-      if (d < bestD) {
-        bestD = d;
-        best = e;
-      }
+      if (d < bestD) { bestD = d; best = e; }
     });
     const [lng, lat] = best.location.coordinates;
     return L.latLng(lat, lng);
   };
 
-  // === Helpers para distancia en resultados ===
-  const getLatLngOfHit = async (hit: SearchHit): Promise<L.LatLng | null> => {
-    if (hit.kind === "building") {
-      return L.latLng(hit.building.latitude, hit.building.longitude);
+  // ====== TTS helpers ======
+  const speakAll = async (texts: string[]) => {
+    if (!("speechSynthesis" in window)) {
+      toast("Tu navegador no soporta voz.");
+      return;
     }
-    if (hit.kind === "landmark") {
-      const [lng, lat] = hit.landmark.location.coordinates;
-      return L.latLng(lat, lng);
+    if (!texts || texts.length === 0) return;
+
+    try {
+      // Si hay algo sonando, cancelamos (pequeña pausa para evitar 'canceled' ruidoso)
+      if (window.speechSynthesis.speaking) {
+        window.speechSynthesis.cancel();
+        await new Promise((r) => setTimeout(r, 80));
+      }
+
+      const u = new SpeechSynthesisUtterance(texts.join(". "));
+      u.lang = "es-ES";
+      u.rate = 1;
+
+      u.onstart = () => setTtsPlaying(true);
+      u.onend = () => setTtsPlaying(false);
+      u.onerror = (ev: any) => {
+        // Ignorar cancelaciones esperadas; mostrar solo errores reales
+        if (ev?.error === "canceled") {
+          setTtsPlaying(false);
+          return;
+        }
+        console.error("TTS error", ev);
+        setTtsPlaying(false);
+        toast.message("Error de síntesis de voz: " + (ev?.error || "desconocido"));
+      };
+
+      // Intenta seleccionar una voz en español si está disponible
+      const voices = window.speechSynthesis.getVoices?.() || [];
+      const esVoice = voices.find((v: SpeechSynthesisVoice) => /es(-|_)?/i.test(v.lang || "")) as SpeechSynthesisVoice | undefined;
+      if (esVoice) u.voice = esVoice;
+
+      window.speechSynthesis.speak(u);
+    } catch (e) {
+      console.error("Error TTS", e);
+      toast.message("No se pudo reproducir voz en este dispositivo.");
+      setTtsPlaying(false);
     }
-    if (hit.kind === "room") {
-      // 1) obtener building_id desde la floor del room
-      const { data: floorRow, error: fErr } = await supabase
+  };
+  const speakPause = () => {
+    if (!("speechSynthesis" in window)) return;
+    try {
+      if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
+        window.speechSynthesis.pause();
+        setTtsPlaying(false);
+      } else if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+        setTtsPlaying(true);
+      }
+    } catch (e) {
+      console.warn("TTS pause/resume error", e);
+    }
+  };
+  const speakReset = () => {
+    if (!("speechSynthesis" in window)) return;
+    try {
+      window.speechSynthesis.cancel();
+    } catch (e) {
+      /* ignore */
+    }
+    setTtsPlaying(false);
+  };
+
+  // ====== Selección edificio/room ======
+  const handleSelectBuilding = async (b: Building, fit = false) => {
+    setSelectedBuilding(b);
+    setSelectedRoom(null);
+
+    if (mapRef.current && fit) {
+      mapRef.current.setView([b.latitude, b.longitude], 18, { animate: true });
+      L.popup().setLatLng([b.latitude, b.longitude]).setContent(`<b>${b.name}</b>`).openOn(mapRef.current);
+    }
+    await loadFloorsAndRooms(b.id);
+  };
+
+  const loadFloorsAndRooms = async (buildingId: string) => {
+    try {
+      const { data: floors, error: floorsErr } = await (supabase as any)
         .from("floors")
-        .select("id, building_id")
-        .eq("id", hit.room.floor_id)
-        .single();
-      if (fErr || !floorRow) return null;
+        .select("id,building_id,floor_number,floor_name")
+        .eq("building_id", buildingId)
+        .order("floor_number", { ascending: true });
+      if (floorsErr) throw floorsErr;
+      setBuildingFloors((floors || []) as Floor[]);
 
-      // 2) coordenadas del building
-      const { data: bRow, error: bErr } = await supabase
-        .from("buildings")
-        .select("id, latitude, longitude")
-        .eq("id", floorRow.building_id)
-        .single();
-      if (bErr || !bRow) return null;
+      const floorIds = (floors || []).map((f) => f.id);
+      if (floorIds.length === 0) {
+        setBuildingRooms([]);
+        return;
+      }
 
-      return L.latLng(bRow.latitude, bRow.longitude);
+      const allowed = ["public", "student", "admin"].slice(0, 1 + (appUser?.role === "student" ? 1 : 0) + (appUser?.role === "admin" ? 1 : 0));
+      const { data: rooms, error: roomsErr } = await (supabase as any)
+        .from("rooms")
+        .select("id,floor_id,name,room_number,description,directions,room_type_id,capacity,equipment,keywords,actividades,target,image_url,map_image_path")
+        .in("floor_id", floorIds)
+        .in("target", allowed)
+        .order("name", { ascending: true });
+      if (roomsErr) throw roomsErr;
+
+      const fMap = new Map<string, Floor>();
+      (floors || []).forEach((f) => fMap.set(f.id, f as Floor));
+      const enhanced = (rooms || []).map((r) => ({
+        ...r,
+        floor: fMap.get(r.floor_id)
+          ? { id: r.floor_id, floor_number: fMap.get(r.floor_id)!.floor_number }
+          : undefined,
+      })) as Room[];
+
+      setBuildingRooms(enhanced);
+    } catch (e) {
+      console.error(e);
+      toast.error("Error cargando pisos/rooms");
     }
-    return null;
   };
 
-  // Enriquecer todos los hits con distancia al usuario (si hay GPS)
-  const enrichHitsWithDistance = async (hits: SearchHit[], user: {lat:number; lng:number} | null) => {
-    if (!user) return hits; // sin GPS, no calculamos
-    const u = L.latLng(user.lat, user.lng);
-    const out: SearchHit[] = [];
-    for (const h of hits) {
-      const ll = await getLatLngOfHit(h);
-      const d = ll ? Math.round(u.distanceTo(ll)) : undefined;
-      out.push({ ...h, distanceMeters: d });
-    }
-    return out;
-  };
-
-  const clearRouteLayers = () => {
-    if (!mapRef.current) return;
-    if (routingRef.current) {
-      mapRef.current.removeControl(routingRef.current);
-      routingRef.current = null;
-    }
-    if (routeLayerRef.current) {
-      mapRef.current.removeLayer(routeLayerRef.current);
-      routeLayerRef.current = null;
-    }
-    if (buildingNoteRef.current) {
-      mapRef.current.removeLayer(buildingNoteRef.current);
-      buildingNoteRef.current = null;
-    }
-    setSteps([]);
-    setNextStepPointer(0);
-    setRouteActive(false);
-    setStepsOpen(false);
-  };
   const focusRoom = async (room: Room) => {
     try {
-      const { data: floor, error: fErr } = await supabase
+      const { data: floor, error: fErr } = await (supabase as any)
         .from("floors")
         .select("id,building_id,floor_number")
         .eq("id", room.floor_id)
         .single();
       if (fErr) throw fErr;
 
-      const { data: building, error: bErr } = await supabase
+      const { data: building, error: bErr } = await (supabase as any)
         .from("buildings")
-        .select(
-          "id,name,description,latitude,longitude,total_floors,building_code,state"
-        )
+        .select("id,name,description,latitude,longitude,total_floors,building_code,state,image_url")
         .eq("id", floor.building_id)
         .eq("state", "HABILITADO")
         .single();
@@ -1186,123 +916,313 @@ export default function PublicNavigator() {
       clearRouteLayers();
       toast.error("Activa el GPS para trazar la ruta a la referencia.");
       mapRef.current.setView(ll, 18, { animate: true });
-      L.popup()
-        .setLatLng(ll)
-        .setContent(`<b>${lm.name ?? lm.type}</b>`)
-        .openOn(mapRef.current);
+      L.popup().setLatLng(ll).setContent(`<b>${lm.name ?? lm.type}</b>`).openOn(mapRef.current);
       return;
     }
     await drawFootRoute(L.latLng(userLoc.lat, userLoc.lng), ll);
     mapRef.current.setView(ll, 18, { animate: true });
-    L.popup()
-      .setLatLng(ll)
-      .setContent(`<b>${lm.name ?? lm.type}</b>`)
-      .openOn(mapRef.current);
+    L.popup().setLatLng(ll).setContent(`<b>${lm.name ?? lm.type}</b>`).openOn(mapRef.current);
   };
 
-  const ensureRoutingLib = async () => {
-    if ((L as any).Routing?.control) return;
-    await import("leaflet-routing-machine");
-  };
+  // ====== Rutas / play by name (fetch route + pasos) ======
+  const latlngAndMetaOfStep = async (st: RouteStep): Promise<{ ll: L.LatLng | null; building: Building | null; room: Room | null }> => {
+    // ROOM
+    if (st.room_id) {
+      const { data: room } = await (supabase as any)
+        .from("rooms")
+        .select("id,floor_id,name,room_number,description,directions,image_url,map_image_path")
+        .eq("id", st.room_id)
+        .single();
+      if (!room) return { ll: null, building: null, room: null };
 
-  // Anexa piso/directions al final de pasos
-  const appendRoomInfoToSteps = (base: string[], room?: Room) => {
-    const out = [...base];
-    if (room?.floor?.floor_number != null) {
-      out.push(`El destino está en el piso ${room.floor.floor_number}.`);
+      const { data: floor } = await (supabase as any)
+        .from("floors").select("id,building_id,floor_number").eq("id", room.floor_id).single();
+      if (!floor) return { ll: null, building: null, room: null };
+
+      const { data: building } = await (supabase as any)
+        .from("buildings").select("id,name,latitude,longitude,image_url").eq("id", floor.building_id).single();
+      if (!building) return { ll: null, building: null, room: null };
+
+      const fullRoom: Room = {
+        ...room,
+        floor: { id: floor.id, floor_number: (floor as any).floor_number },
+      };
+      return {
+        ll: L.latLng(building.latitude, building.longitude),
+        building: building as Building,
+        room: fullRoom,
+      };
     }
-    const d = (room?.directions || "").trim();
-    if (d) out.push(`Indicaciones adicionales: ${d}`);
-    return out;
+
+    // LANDMARK
+    if (st.landmark_id) {
+      const { data: lm } = await (supabase as any)
+        .from("landmarks").select("location,building_id").eq("id", st.landmark_id).single();
+      if (!lm?.location?.coordinates) return { ll: null, building: null, room: null };
+      const [lng, lat] = lm.location.coordinates;
+      let building: Building | null = null;
+      if (lm.building_id) {
+        const { data: b } = await (supabase as any)
+          .from("buildings").select("id,name,latitude,longitude,image_url").eq("id", lm.building_id).single();
+        building = (b || null) as Building | null;
+      }
+      return { ll: L.latLng(lat, lng), building, room: null };
+    }
+
+    // ENTRANCE
+    if (st.entrance_id) {
+      const { data: en } = await (supabase as any)
+        .from("entrances").select("location,building_id").eq("id", st.entrance_id).single();
+      if (!en?.location?.coordinates) return { ll: null, building: null, room: null };
+      const [lng, lat] = en.location.coordinates;
+      let building: Building | null = null;
+      if (en.building_id) {
+        const { data: b } = await (supabase as any)
+          .from("buildings").select("id,name,latitude,longitude,image_url").eq("id", en.building_id).single();
+        building = (b || null) as Building | null;
+      }
+      return { ll: L.latLng(lat, lng), building, room: null };
+    }
+
+    return { ll: null, building: null, room: null };
   };
 
-  // ====== Gestión de ruta + anuncios por intersecciones ======
-  const routePathRef = useRef<L.LatLng[] | null>(null);
-  const triggerPtsRef = useRef<L.LatLng[]>([]);
-  const spokenStepIdxRef = useRef<number>(-1);
-  const lastSpeakTsRef = useRef<number>(0);
+  const fetchRouteByName = async (term: string): Promise<Route | null> => {
+    const { data, error } = await (supabase as any)
+      .from("routes")
+      .select("id,name,description,is_active")
+      .ilike("name", `%${term}%`)
+      .eq("is_active", true)
+      .limit(1);
+    if (error) {
+      console.error(error);
+      toast.error("Error buscando recorrido");
+      return null;
+    }
+    return data?.[0] ?? null;
+  };
 
-  // Detecta puntos de giro (donde hay cambio de dirección notable) + final
-  function computeTurnPoints(path: L.LatLng[]): L.LatLng[] {
+  const fetchRouteSteps = async (routeId: string): Promise<RouteStep[]> => {
+    const { data, error } = await (supabase as any)
+      .from("route_steps")
+      .select("id,route_id,order_index,custom_instruction,room_id,landmark_id,entrance_id,footway_id,parking_id")
+      .eq("route_id", routeId)
+      .order("order_index", { ascending: true });
+    if (error) {
+      console.error(error);
+      toast.error("Error cargando pasos del recorrido");
+      return [];
+    }
+    return data || [];
+  };
+
+  const startRouteByName = async (term: string) => {
+    const r = await fetchRouteByName(term);
+    if (!r) {
+      toast.message("No encontré un recorrido con ese nombre.");
+      return;
+    }
+    const steps = await fetchRouteSteps(r.id);
+    if (!steps.length) {
+      toast.message("Este recorrido no tiene pasos.");
+      return;
+    }
+
+    setRoutePlaying({ route: r, steps });
+    setRouteIdx(0);
+    toast.success(`Recorrido: ${r.name}`);
+
+    // limpiar imagen previa y refs prev
+    setFirstRouteBuildingImage(null);
+    setShowBuildingImageOnce(false);
+    firstStepBuildingIdRef.current = null;
+    prevBuildingRef.current = null;
+    prevFloorRef.current = null;
+
+    // obtener imagen del primer paso (si tiene building/room con image_url)
+    try {
+      const firstMeta = await latlngAndMetaOfStep(steps[0]);
+      const img = firstMeta.building?.image_url ?? firstMeta.room?.image_url ?? null;
+      if (img) {
+        setFirstRouteBuildingImage(img);
+        // marcar id del building del primer paso para mostrar imagen en modal solo en el primer step de ese edificio
+        if (firstMeta.building?.id) firstStepBuildingIdRef.current = firstMeta.building.id;
+      } else {
+        firstStepBuildingIdRef.current = null;
+      }
+    } catch (e) {
+      console.warn("No pude obtener imagen del primer paso", e);
+      setFirstRouteBuildingImage(null);
+      firstStepBuildingIdRef.current = null;
+    }
+
+    // reiniciar contexto y reproducir primer paso
+    await playCurrentRouteStep(0, r, steps);
+  };
+
+  const playCurrentRouteStep = async (idx: number, route: Route, steps: RouteStep[]) => {
+    if (!userLoc) {
+      toast.error("Activa el GPS para trazar el recorrido.");
+      return;
+    }
+    clearRouteLayers();
+    if (routingRef.current && mapRef.current) {
+      try { mapRef.current.removeControl(routingRef.current); } catch {}
+      routingRef.current = null;
+    }
+
+    const st = steps[idx];
+    const meta = await latlngAndMetaOfStep(st);
+    if (!meta.ll) {
+      toast.message("Paso sin geolocalización. Avanza al siguiente.");
+      return;
+    }
+
+    // Actualizar contexto visual del modal
+    setCurrentStepRoom(meta.room);
+    setCurrentStepBuilding(meta.building || null);
+
+    // Determinar building / floor actuales
+    const currentBuildingId = meta.building?.id || null;
+    const currentFloorNumber = meta.room?.floor?.floor_number ?? null;
+
+    // Decide si este es el primer step del building (con la imagen que guardamos)
+    const isFirstStepForBuilding =
+      firstStepBuildingIdRef.current != null &&
+      currentBuildingId != null &&
+      currentBuildingId === firstStepBuildingIdRef.current &&
+      prevBuildingRef.current == null;
+
+    if (isFirstStepForBuilding) {
+      setShowBuildingImageOnce(true);
+      // mantendremos la small-card (firstRouteBuildingImage) hasta que el usuario la cierre
+    } else {
+      setShowBuildingImageOnce(false);
+    }
+
+    // Decidir si es intra-bloque (mismo edificio que el previo)
+    const isSameBuildingAsPrev = currentBuildingId != null && currentBuildingId === prevBuildingRef.current;
+    const isSameFloorAsPrev = isSameBuildingAsPrev && currentFloorNumber != null && currentFloorNumber === prevFloorRef.current;
+
+    // Si es intra-bloque: mostrar custom_instruction / no trazar mapa
+    if (isSameBuildingAsPrev && (meta.room || st.custom_instruction)) {
+      const linesBase: string[] = st.custom_instruction ? [st.custom_instruction] : [];
+      const lines = (() => {
+        const out = [...linesBase];
+        // solo indicar el piso si no es el mismo piso que ya estábamos
+        if (meta.room?.floor?.floor_number != null && !isSameFloorAsPrev) out.push(`El destino está en el piso ${meta.room.floor.floor_number}.`);
+        const d = (meta.room?.directions || "").trim();
+        if (d) out.push(`Indicaciones adicionales: ${d}`);
+        return out;
+      })();
+      setSteps(lines);
+      setNextStepPointer(0);
+      setRouteActive(true);
+      setStepsOpen(true);
+      speakReset();
+      if (lines.length) speakAll(lines);
+      // actualizar prev refs: ahora ya estamos "dentro" del edificio/piso
+      prevBuildingRef.current = currentBuildingId;
+      prevFloorRef.current = currentFloorNumber;
+      // si mostramos la imagen del primer step, desactivar el marcador para no repetirla
+      if (isFirstStepForBuilding) {
+        firstStepBuildingIdRef.current = null;
+      }
+      return;
+    }
+
+    // EXTRA-BLOQUE: trazar ruta
+    const fromLL = L.latLng(userLoc.lat, userLoc.lng);
+    await drawFootRoute(fromLL, meta.ll, meta.room || undefined);
+
+    // construir instrucciones (turn-by-turn o fallback) será manejado por drawFootRoute / handlers
+    // pero agregamos lógica para la línea de piso si aún no fue añadida por drawFootRoute
+    // drawFootRoute ya pone `setSteps(...)` con el conjunto de instrucciones; ajustaremos después en los handlers.
+    // Guardar prev refs ahora que hemos procesado el paso
+    prevBuildingRef.current = currentBuildingId;
+    prevFloorRef.current = currentFloorNumber;
+    if (isFirstStepForBuilding) {
+      firstStepBuildingIdRef.current = null;
+    }
+  };
+
+  const nextRouteStep = async () => {
+    if (!routePlaying) return;
+    const next = routeIdx + 1;
+    if (next >= routePlaying.steps.length) {
+      toast.success("Recorrido finalizado 🎉");
+      setRoutePlaying(null);
+      setRouteIdx(0);
+      clearRouteLayers();
+      // no borramos la small-card automáticamente; el usuario puede ocultarla
+      setShowBuildingImageOnce(false);
+      return;
+    }
+    setRouteIdx(next);
+    await playCurrentRouteStep(next, routePlaying.route, routePlaying.steps);
+  };
+
+  // ====== drawFootRoute (usa routing-machine u OSRM) ======
+  const computeTurnPoints = (path: L.LatLng[]) => {
     const pts: L.LatLng[] = [];
     if (path.length < 2) return pts;
     for (let i = 1; i < path.length - 1; i++) {
       const dir = turnDirection(path[i - 1], path[i], path[i + 1]);
       if (dir) pts.push(path[i]);
     }
-    // Punto final
     pts.push(path[path.length - 1]);
     return pts;
-  }
-
-  // Hook: cuando el usuario se acerca a la próxima intersección, anunciar el “siguiente” paso
-  useEffect(() => {
-    if (!routeActive || !userLoc || !triggerPtsRef.current.length) return;
-
-    const NEAR_M = 18; // umbral de llegada a la intersección (metros)
-
-    // Índice del punto de giro que estás por alcanzar
-    const idxAt = Math.min(
-      Math.max(spokenStepIdxRef.current + 1, 0),
-      triggerPtsRef.current.length - 1
-    );
-
-    const target = triggerPtsRef.current[idxAt];
-    const d = L.latLng(userLoc.lat, userLoc.lng).distanceTo(target);
-
-    if (d <= NEAR_M) {
-      const now = Date.now();
-      if (now - lastSpeakTsRef.current > 2500) {
-        // ✅ Anunciar el PASO SIGUIENTE al que estás alcanzando
-        const announceIdx = Math.min(idxAt + 1, steps.length - 1);
-
-        if (announceIdx >= 0 && announceIdx < steps.length) {
-          speakAll([steps[announceIdx]]);
-          lastSpeakTsRef.current = now;
-
-          // Avanzar punteros con base en el paso ANUNCIADO (el siguiente)
-          spokenStepIdxRef.current = announceIdx;
-          setNextStepPointer(announceIdx + 1);
-        }
-      }
-    }
-  }, [userLoc, routeActive, steps]);
+  };
 
   const drawFootRoute = async (fromLL: L.LatLng, toLL: L.LatLng, roomInfo?: Room) => {
     if (!mapRef.current) return;
 
-    clearRouteLayers(); // limpiar antes
+    // limpiar antes
+    if (routingRef.current && mapRef.current) {
+      try { mapRef.current.removeControl(routingRef.current); } catch {}
+      routingRef.current = null;
+    }
+    if (routeLayerRef.current && mapRef.current) {
+      try { mapRef.current.removeLayer(routeLayerRef.current); } catch {}
+      routeLayerRef.current = null;
+    }
+
     const ready = await waitForGraphReady();
     setRouteActive(true);
-    setStepsOpen(false); // el modal NO se abre automáticamente (la voz guía)
+    setStepsOpen(false);
 
     try {
-      await ensureRoutingLib();
+      await import("leaflet-routing-machine");
 
-      // 1) Intento con red peatonal interna
+      // 1) Red peatonal interna
       if (ready) {
         const campusPath = routeOnCampus(fromLL, toLL);
         if (campusPath && campusPath.length >= 2) {
           const layer = L.polyline(campusPath, { weight: 5, opacity: 0.95 });
           routeLayerRef.current = layer.addTo(mapRef.current!);
-          mapRef.current!.fitBounds(layer.getBounds(), { padding: [60, 60] });
+          mapRef.current!.fitBounds(layer.getBounds(), { padding: [60, 60], maxZoom: 19 });
 
           const insts = buildTurnByTurn(campusPath, toLL);
-          const finalInsts = appendRoomInfoToSteps(insts, roomInfo);
-          setSteps(finalInsts);
+          const out = (() => {
+            const base = [...insts];
+            if (roomInfo?.floor?.floor_number != null) base.push(`El destino está en el piso ${roomInfo.floor.floor_number}.`);
+            const d = (roomInfo?.directions || "").trim();
+            if (d) base.push(`Indicaciones adicionales: ${d}`);
+            return base;
+          })();
+          setSteps(out);
 
-          // Prepara puntos de disparo de voz
           routePathRef.current = campusPath;
           triggerPtsRef.current = computeTurnPoints(campusPath);
           spokenStepIdxRef.current = -1;
           setNextStepPointer(0);
-          speakReset(); // no hablar ahora; hablar al acercarse
-
+          speakReset();
+          // NOTE: aquí no forzamos a hablar; el efecto de proximidad hablará
           return;
         }
       }
 
-      // 2) Fallback OSRM (a pie)
+      // 2) Fallback OSRM
       const plan = (L as any).Routing.plan([fromLL, toLL], {
         draggableWaypoints: false,
         addWaypoints: false,
@@ -1331,29 +1251,32 @@ export default function PublicNavigator() {
         const coords: L.LatLng[] = (route?.coordinates || []).map((c: any) =>
           L.latLng(c.lat, c.lng)
         );
-
-        // Intentamos usar instrucciones de OSRM; si no, construimos las nuestras
-        const osrmInsts: string[] | undefined = route?.instructions?.map((i: any) => i.text);
-        const insts = osrmInsts && osrmInsts.length > 0 ? osrmInsts : buildTurnByTurn(coords, toLL);
-        const finalInsts = appendRoomInfoToSteps(insts, roomInfo);
-        setSteps(finalInsts);
+        const insts = buildTurnByTurn(coords, toLL);
+        const out = (() => {
+          const base = [...insts];
+          if (roomInfo?.floor?.floor_number != null) base.push(`El destino está en el piso ${roomInfo.floor.floor_number}.`);
+          const d = (roomInfo?.directions || "").trim();
+          if (d) base.push(`Indicaciones adicionales: ${d}`);
+          return base;
+        })();
+        setSteps(out);
 
         routePathRef.current = coords;
         triggerPtsRef.current = computeTurnPoints(coords);
         spokenStepIdxRef.current = -1;
         setNextStepPointer(0);
-        speakReset(); // no hablar ahora; hablar al acercarse
+        speakReset();
       });
 
       ctrl.on("routingerror", () => {
         toast.message("No se pudo obtener ruta peatonal, dibujo una guía directa.");
         drawFallbackLine(fromLL, toLL);
         let insts = [
-          `Camina en línea recta hacia el destino (≈ ${Math.round(
-            haversine(fromLL, toLL)
-          )} m).`,
+          `Camina en línea recta hacia el destino (≈ ${Math.round(haversine(fromLL, toLL))} m).`,
         ];
-        insts = appendRoomInfoToSteps(insts, roomInfo);
+        if (roomInfo?.floor?.floor_number != null) insts.push(`El destino está en el piso ${roomInfo.floor.floor_number}.`);
+        const d = (roomInfo?.directions || "").trim();
+        if (d) insts.push(`Indicaciones adicionales: ${d}`);
         setSteps(insts);
 
         routePathRef.current = [fromLL, toLL];
@@ -1366,12 +1289,10 @@ export default function PublicNavigator() {
       console.error(e);
       toast.error("No se pudo trazar la ruta. Te muestro una guía directa.");
       drawFallbackLine(fromLL, toLL);
-      let insts = [
-        `Camina en línea recta hacia el destino (≈ ${Math.round(
-          haversine(fromLL, toLL)
-        )} m).`,
-      ];
-      insts = appendRoomInfoToSteps(insts, roomInfo);
+      let insts = [`Camina en línea recta hacia el destino (≈ ${Math.round(haversine(fromLL, toLL))} m).`];
+      if (roomInfo?.floor?.floor_number != null) insts.push(`El destino está en el piso ${roomInfo.floor.floor_number}.`);
+      const d = (roomInfo?.directions || "").trim();
+      if (d) insts.push(`Indicaciones adicionales: ${d}`);
       setSteps(insts);
 
       routePathRef.current = [fromLL, toLL];
@@ -1385,18 +1306,62 @@ export default function PublicNavigator() {
   const drawFallbackLine = (from: L.LatLng, to: L.LatLng) => {
     if (!mapRef.current) return;
     if (routeLayerRef.current) {
-      mapRef.current.removeLayer(routeLayerRef.current);
+      try { mapRef.current.removeLayer(routeLayerRef.current); } catch {}
       routeLayerRef.current = null;
     }
     const layer = L.polyline([from, to], { weight: 5, dashArray: "6 8", opacity: 0.9 });
     routeLayerRef.current = layer.addTo(mapRef.current);
-    mapRef.current.fitBounds(layer.getBounds(), { padding: [60, 60] });
+    mapRef.current.fitBounds(layer.getBounds(), { padding: [60, 60], maxZoom: 19 });
   };
 
+  // Efecto que anuncia pasos cuando te acercas a trigger points
+  useEffect(() => {
+    if (!routeActive || !userLoc || !triggerPtsRef.current.length) return;
+    const NEAR_M = 18;
+    const idxAt = Math.min(Math.max(spokenStepIdxRef.current + 1, 0), triggerPtsRef.current.length - 1);
+    const target = triggerPtsRef.current[idxAt];
+    const d = L.latLng(userLoc.lat, userLoc.lng).distanceTo(target);
+
+    if (d <= NEAR_M) {
+      const now = Date.now();
+      if (now - lastSpeakTsRef.current > 2500) {
+        const announceIdx = Math.min(idxAt + 1, steps.length - 1);
+        if (announceIdx >= 0 && announceIdx < steps.length) {
+          speakAll([steps[announceIdx]]);
+          lastSpeakTsRef.current = now;
+          spokenStepIdxRef.current = announceIdx;
+          setNextStepPointer(announceIdx + 1);
+        }
+      }
+    }
+  }, [userLoc, routeActive, steps]);
+
+  // Limpieza rutas
+  const clearRouteLayers = () => {
+    if (!mapRef.current) return;
+    if (routingRef.current) {
+      try { mapRef.current.removeControl(routingRef.current); } catch {}
+      routingRef.current = null;
+    }
+    if (routeLayerRef.current) {
+      try { mapRef.current.removeLayer(routeLayerRef.current); } catch {}
+      routeLayerRef.current = null;
+    }
+    if (buildingNoteRef.current) {
+      try { mapRef.current.removeLayer(buildingNoteRef.current); } catch {}
+      buildingNoteRef.current = null;
+    }
+    setSteps([]);
+    setNextStepPointer(0);
+    setRouteActive(false);
+    setStepsOpen(false);
+  };
+
+  // Mostrar nota de indicaciones en el building (tooltip)
   const showBuildingDirectionsNote = () => {
     if (!mapRef.current || !selectedBuilding) return;
     if (buildingNoteRef.current) {
-      mapRef.current.removeLayer(buildingNoteRef.current);
+      try { mapRef.current.removeLayer(buildingNoteRef.current); } catch {}
       buildingNoteRef.current = null;
     }
     const text = selectedRoom?.directions?.trim();
@@ -1414,52 +1379,7 @@ export default function PublicNavigator() {
     buildingNoteRef.current = tt;
   };
 
-  // ====== TTS ======
-  const speakAll = (texts: string[]) => {
-    if (!("speechSynthesis" in window)) {
-      toast("Tu navegador no soporta voz.");
-      return;
-    }
-    const u = new SpeechSynthesisUtterance(texts.join(". "));
-    u.lang = "es-ES";
-    u.rate = 1;
-    u.onend = () => setTtsPlaying(false);
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(u);
-    setTtsPlaying(true);
-  };
-  const speakPause = () => {
-    if (!("speechSynthesis" in window)) return;
-    if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
-      window.speechSynthesis.pause();
-      setTtsPlaying(false);
-    } else if (window.speechSynthesis.paused) {
-      window.speechSynthesis.resume();
-      setTtsPlaying(true);
-    }
-  };
-  const speakReset = () => {
-    if (!("speechSynthesis" in window)) return;
-    window.speechSynthesis.cancel();
-    setTtsPlaying(false);
-  };
-
-  // Chat helpers
-  const pushAssistant = (text: string) =>
-    setChatMsgs((p) => [...p, { role: "assistant", text }]);
-  const pushUser = (text: string) =>
-    setChatMsgs((p) => [...p, { role: "user", text }]);
-
-  const onChatSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const msg = chatInput.trim();
-    if (!msg) return;
-    pushUser(msg);
-    setChatInput("");
-    await handleSearch(undefined, msg);
-  };
-
-  // Rooms agrupados
+  // Rooms agrupados por piso (memorizado)
   const roomsByFloor = useMemo(() => {
     const map = new Map<number, Room[]>();
     buildingRooms.forEach((r) => {
@@ -1470,51 +1390,122 @@ export default function PublicNavigator() {
     return Array.from(map.entries()).sort((a, b) => a[0] - b[0]);
   }, [buildingRooms]);
 
-  // reset rápido
+  // Reset UI
   const resetUI = () => {
     clearRouteLayers();
+    if (routingRef.current && mapRef.current) {
+      try { mapRef.current.removeControl(routingRef.current); } catch {}
+      routingRef.current = null;
+    }
     setSelectedRoom(null);
     setSelectedBuilding(null);
     setQuery("");
-    setChatOpen(false);
     routePathRef.current = null;
     triggerPtsRef.current = [];
     spokenStepIdxRef.current = -1;
     setNextStepPointer(0);
+    setRoutePlaying(null);
+    setRouteIdx(0);
+    setCurrentStepRoom(null);
+    setCurrentStepBuilding(null);
+    setFirstRouteBuildingImage(null);
+    setShowBuildingImageOnce(false);
+    prevBuildingRef.current = null;
+    prevFloorRef.current = null;
+    firstStepBuildingIdRef.current = null;
   };
 
-  // ================= UI =================
+  // ====== Búsqueda UI / handler ======
+  const handleSearch = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    const q = (query || "").trim();
+    if (!q) return;
+
+    // Rooms
+    const rList = await findRooms(q);
+    // Landmarks
+    const lList = await findLandmarksMany(q);
+    // Buildings
+    const bList = findBuilding(q);
+
+    let hits: Array<
+      | { kind: "room"; room: Room; label: string }
+      | { kind: "landmark"; landmark: Landmark; label: string }
+      | { kind: "building"; building: Building; label: string }
+    > = [
+      ...rList.map((r) => ({ kind: "room" as const, room: r, label: r.name })),
+      ...lList.map((l) => ({ kind: "landmark" as const, landmark: l, label: l.name ?? l.type })),
+      ...bList.map((b) => ({ kind: "building" as const, building: b, label: b.name })),
+    ];
+
+    if (hits.length === 0) {
+      // probar como recorrido
+      const asRoute = await fetchRouteByName(q);
+      if (asRoute) {
+        await startRouteByName(q);
+        return;
+      }
+      toast.error("Sin resultados");
+      return;
+    }
+
+    if (hits.length === 1) {
+      const h = hits[0];
+      if (h.kind === "room") await focusRoom(h.room);
+      else if (h.kind === "landmark") await focusLandmark(h.landmark);
+      else await handleSelectBuilding(h.building, true);
+      return;
+    }
+
+    // Si hay varios, tomamos el primero por ahora
+    const h = hits[0];
+    if (h.kind === "room") await focusRoom(h.room);
+    else if (h.kind === "landmark") await focusLandmark(h.landmark);
+    else await handleSelectBuilding(h.building, true);
+  };
+
+  // ====== UI: render ======
   return (
     <div className="relative h-screen w-full bg-background">
-      {/* Header (NavBar) */}
+      {/* Header */}
       <div className="absolute top-0 left-0 right-0 z-20 bg-primary text-primary-foreground border-b border-primary/30">
         <div className="max-w-6xl mx-auto px-3 md:px-4 h-12 flex items-center justify-between gap-2">
           <div className="flex items-center gap-3 min-w-0">
             <div className="font-semibold text-sm sm:text-base leading-none">UNEMI Campus</div>
             {userLoc ? (
-              <Badge variant="secondary" className="hidden sm:inline-flex">
-                GPS activo
-              </Badge>
+              <Badge variant="secondary" className="hidden sm:inline-flex">GPS activo</Badge>
             ) : gpsDenied ? (
-              <Badge variant="destructive" className="hidden sm:inline-flex">
-                GPS no disponible
-              </Badge>
+              <Badge variant="destructive" className="hidden sm:inline-flex">GPS no disponible</Badge>
             ) : (
               <Badge className="hidden sm:inline-flex">Obteniendo GPS…</Badge>
             )}
           </div>
 
-          {/* Acciones derecha */}
-          <div className="flex items-center gap-2" />
+          <div className="flex items-center gap-2">
+            {appUser ? (
+              <>
+                <Badge variant="outline" className="hidden sm:inline-flex">
+                  <UserCircle2 className="w-4 h-4 mr-1" /> {appUser.usuario} · {appUser.role}
+                </Badge>
+                <Button size="sm" variant="secondary" onClick={doLogout}>
+                  <LogOut className="w-4 h-4 mr-2" /> Salir
+                </Button>
+              </>
+            ) : (
+              <Button size="sm" onClick={() => setLoginOpen(true)}>
+                <LogIn className="w-4 h-4 mr-2" /> Iniciar sesión
+              </Button>
+            )}
+          </div>
         </div>
       </div>
 
       {/* Mapa */}
-      <div className={`absolute inset-0 ${routeActive ? "pt-10" : "pt-12"}`}>
+      <div className={`absolute inset-0 pt-12`}>
         <div ref={mapContainer} className="w-full h-full" />
       </div>
 
-      {/* Tarjeta superior de búsqueda: OCULTA cuando hay ruta */}
+      {/* Tarjeta búsqueda */}
       {!routeActive && (
         <Card className="absolute top-16 left-4 right-4 md:left-6 md:right-auto md:w-[840px] z-[1200] p-3 shadow-xl border-border/60 bg-card/95 backdrop-blur">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
@@ -1522,7 +1513,6 @@ export default function PublicNavigator() {
               Escribe tu destino y te llevo a la <b>entrada</b> más cercana o a la <b>referencia</b>.
             </div>
             <div className="flex gap-2">
-              {/* Compartir */}
               <Button
                 size="sm"
                 variant="outline"
@@ -1535,8 +1525,8 @@ export default function PublicNavigator() {
                     toast.error("No hay ubicación para compartir aún");
                     return;
                   }
-                  const url = buildShareUrl(lat, lng, zoom);
-                  copyToClipboard(url);
+                  const url = `${window.location.origin}${window.location.pathname}?lat=${lat.toFixed(6)}&lng=${lng.toFixed(6)}${zoom ? `&z=${zoom}` : ""}`;
+                  navigator.clipboard?.writeText(url).then(() => toast.success("Enlace copiado"));
                 }}
                 title="Copiar enlace con mi ubicación o vista actual"
               >
@@ -1545,27 +1535,27 @@ export default function PublicNavigator() {
             </div>
           </div>
 
-          <form className="flex gap-2 items-end" onSubmit={(e) => handleSearch(e)} autoComplete="off">
+          <form className="flex gap-2 items-end" onSubmit={(e) => { e.preventDefault(); handleSearch(); }} autoComplete="off">
             <div className="flex-1">
               <Label className="text-xs">¿A dónde quieres ir?</Label>
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder='Ej: "Aula 1", "Aula 2", "Aula 3"'
+                placeholder='Ej: "Aula 201", "Bloque CRAI", "plazoleta principal" o nombre de un recorrido'
               />
             </div>
-            <Button type="submit">
+            <Button type="button" onClick={() => handleSearch()}>
               <Search className="w-4 h-4 mr-2" /> Buscar
             </Button>
           </form>
 
           <div className="text-xs text-muted-foreground mt-2">
-            Ingresa el Aula donde debes dirigirte
+            Ingresa un aula, bloque, referencia o nombre de <b>recorrido</b>.
           </div>
         </Card>
       )}
 
-      {/* Panel edificio: oculto durante ruta */}
+      {/* Panel edificio */}
       {selectedBuilding && !routeActive && (
         <Card className="absolute bottom-4 left-4 right-4 md:left-6 md:right-auto md:w-[720px] z-[1200] p-4 shadow-xl border-border/60 bg-card/95 backdrop-blur">
           <div className="mb-2">
@@ -1656,56 +1646,25 @@ export default function PublicNavigator() {
         </Card>
       )}
 
-      {/* Chip destino mínimo durante ruta */}
-      {routeActive && selectedBuilding && (
-        <div className="absolute top-14 left-3 z-[1200]">
-          <div className="rounded-md border bg-card/90 backdrop-blur px-3 py-2 shadow">
-            <div className="text-xs text-muted-foreground">Destino</div>
-            <div className="text-sm font-medium">
-              {selectedRoom
-                ? `${selectedRoom.name}${selectedRoom.room_number ? ` · ${selectedRoom.room_number}` : ""}`
-                : selectedBuilding.name}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Panel para punto compartido */}
-      {sharedTarget && (
+      {/* Tarjeta imagen del primer edificio del recorrido (si existe) */}
+      {firstRouteBuildingImage && (
         <div className="absolute top-14 right-3 z-[1200]">
           <div className="rounded-md border bg-card/90 backdrop-blur px-3 py-2 shadow max-w-xs">
-            <div className="text-xs text-muted-foreground">Punto compartido</div>
-            <div className="text-sm mb-2">¿Quieres ir a ese punto?</div>
-            <div className="flex gap-2">
-              <Button
-                size="sm"
-                onClick={() => {
-                  if (!userLoc) {
-                    toast.error("Activa el GPS para trazar la ruta.");
-                    return;
-                  }
-                  drawFootRoute(L.latLng(userLoc.lat, userLoc.lng), sharedTarget);
-                }}
-              >
-                Ir a este punto
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  if (!mapRef.current) return;
-                  mapRef.current.setView(sharedTarget, 18, { animate: true });
-                }}
-              >
-                Ver
-              </Button>
+            <div className="text-xs text-muted-foreground">Imagen inicio del recorrido</div>
+            <div className="mt-2 w-40 h-24 rounded overflow-hidden border bg-muted">
+              <img src={firstRouteBuildingImage} alt="Primer edificio" className="w-full h-full object-cover" />
+            </div>
+            <div className="mt-2 flex gap-2">
+              <Button size="sm" onClick={() => setStepsOpen(true)}>Ver pasos</Button>
+              <Button size="sm" variant="outline" onClick={() => {
+                setFirstRouteBuildingImage(null);
+              }}>Ocultar</Button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Instrucciones: MODAL (encima del mapa). 
-          Importante: mostramos SIEMPRE los “siguientes pasos” (a partir de nextStepPointer). */}
+      {/* Modal Instrucciones */}
       <Dialog
         open={routeActive && stepsOpen && steps.length > 0}
         onOpenChange={(o) => {
@@ -1717,44 +1676,82 @@ export default function PublicNavigator() {
       >
         <DialogPortal>
           <DialogOverlay className="fixed inset-0 z-[3000] bg-black/50 backdrop-blur-sm" />
-          <DialogContent className="z-[3001] p-0 max-w-none w-[100vw] h-[85vh] sm:h-auto sm:max-h-[70vh] sm:max-w-lg">
+          <DialogContent className="z-[3001] p-0 max-w-none w-[100vw] sm:w-[720px] h-[85vh] sm:h-auto sm:max-h-[88vh]">
             <div className="flex flex-col h-full">
-              {/* Header */}
-              <div className="px-4 py-3 border-b flex items-center justify-between">
-                <div className="font-semibold">Instrucciones</div>
-                <div className="flex gap-2">
-                  <Button size="sm" variant="outline" onClick={() => speakAll(steps.slice(nextStepPointer))}>
-                    ▶️
+              <DialogHeader className="px-5 pt-4">
+                <DialogTitle>Instrucciones del recorrido</DialogTitle>
+                <DialogDescription>
+                  Sigue los pasos en orden. Si estás dentro del mismo edificio, te leeré la
+                  instrucción personalizada.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="px-5 pb-3 flex items-center gap-2">
+                <Button size="sm" variant="outline" onClick={() => speakAll(steps.slice(nextStepPointer))}>
+                  ▶️ Leer
+                </Button>
+                <Button size="sm" variant="outline" onClick={speakPause}>
+                  {ttsPlaying ? "⏸️ Pausar" : "⏯️ Reanudar"}
+                </Button>
+                <div className="flex-1" />
+                {routePlaying && (
+                  <Button size="sm" onClick={nextRouteStep}>
+                    Siguiente paso
                   </Button>
-                  <Button size="sm" variant="outline" onClick={speakPause}>
-                    {ttsPlaying ? "⏸️" : "⏯️"}
-                  </Button>
-                  <Button
-                    size="sm"
-                    onClick={() => {
-                      setStepsOpen(false);
-                      speakReset();
-                    }}
-                  >
-                    <X className="w-4 h-4" />
-                  </Button>
-                </div>
+                )}
+                <Button size="sm" variant="ghost" onClick={() => { setStepsOpen(false); speakReset(); }}>
+                  <X className="w-4 h-4" />
+                </Button>
               </div>
 
-              {/* Lista de pasos: solo los siguientes */}
-              <div className="flex-1 overflow-y-auto px-4 py-3">
-                <ol className="list-decimal pl-5 space-y-2 text-sm">
-                  {steps.slice(nextStepPointer).map((s, i) => (
-                    <li key={i}>{s}</li>
-                  ))}
-                </ol>
+              {/* Lista de pasos */}
+              {steps.length > 0 && (
+                <div className="px-5 pb-2 overflow-auto">
+                  <ol className="list-decimal pl-5 space-y-2 text-sm">
+                    {steps.slice(nextStepPointer).map((s, i) => (
+                      <li key={i}>{s}</li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+
+              {/* Imagen contextual */}
+              <div className="px-5 pb-5">
+                {currentStepRoom?.image_url ? (
+                  <>
+                    <div className="text-sm text-muted-foreground mb-2">Imagen del espacio</div>
+                    <div className="rounded-lg border bg-muted/40 p-2">
+                      <img
+                        src={currentStepRoom.image_url}
+                        alt="Espacio"
+                        className="w-full max-h-[520px] object-contain rounded-md"
+                        loading="eager"
+                      />
+                    </div>
+                  </>
+                ) : showBuildingImageOnce && currentStepBuilding?.image_url ? (
+                  <>
+                    <div className="text-sm text-muted-foreground mb-2">Imagen del edificio</div>
+                    <div className="rounded-lg border bg-muted/40 p-2">
+                      <img
+                        src={currentStepBuilding.image_url}
+                        alt="Edificio"
+                        className="w-full max-h-[520px] object-contain rounded-md"
+                        loading="eager"
+                      />
+                    </div>
+                  </>
+                ) : currentStepBuilding?.image_url && !showBuildingImageOnce ? (
+                  // si no es el primer step para el edificio y no hay room image, optar por no mostrar la imagen para evitar repetición
+                  null
+                ) : null}
               </div>
             </div>
           </DialogContent>
         </DialogPortal>
       </Dialog>
 
-      {/* Botón flotante “Ver pasos” */}
+      {/* Botones flotantes */}
       {routeActive && steps.length > 0 && !stepsOpen && (
         <div className="absolute bottom-4 right-4 z-[1200]">
           <Button size="lg" onClick={() => setStepsOpen(true)}>
@@ -1763,7 +1760,6 @@ export default function PublicNavigator() {
         </div>
       )}
 
-      {/* Botón flotante “Nueva ruta / Nueva consulta” — visible en móvil y escritorio */}
       {routeActive && (
         <div className="absolute bottom-4 left-4 z-[1200]">
           <Button size="lg" variant="secondary" onClick={resetUI}>
@@ -1772,82 +1768,29 @@ export default function PublicNavigator() {
         </div>
       )}
 
-      {/* Modal chat/búsqueda (atajo "/") */}
-      <Dialog open={chatOpen} onOpenChange={setChatOpen}>
-        <DialogContent className="sm:max-w-lg">
+      {/* Modal Login */}
+      <Dialog open={loginOpen} onOpenChange={setLoginOpen}>
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>{routeActive ? "Buscar otro destino" : "Te ayudo a llegar"}</DialogTitle>
-            <DialogDescription>
-              Escribe “Bloque CRAI”, “Aula 201”, “Secretaría General” o “plazoleta principal”. También puedes pegar un enlace con <code>?lat</code> y <code>?lng</code>.
-            </DialogDescription>
+            <DialogTitle>Iniciar sesión</DialogTitle>
+            <DialogDescription>Accede para ver destinos según tu rol.</DialogDescription>
           </DialogHeader>
 
-          <div className="border rounded-md p-3 max-h-72 overflow-y-auto space-y-2">
-            {chatMsgs.map((m, i) => (
-              <div key={i} className={`flex ${m.role === "assistant" ? "justify-start" : "justify-end"}`}>
-                <div
-                  className={`px-3 py-2 rounded-md text-sm max-w-[80%] ${
-                    m.role === "assistant" ? "bg-muted" : "bg-primary text-primary-foreground"
-                  }`}
-                >
-                  {m.text}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <form onSubmit={onChatSubmit} className="flex gap-2">
-            <Input
-              ref={chatInputRef}
-              value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
-              placeholder='Ej: "Bloque CRAI", "Secretaría General" o "plazoleta principal"'
-            />
-            <Button type="submit">
-              <Send className="w-4 h-4 mr-2" />
-              Enviar
-            </Button>
+          <form onSubmit={doLogin} className="space-y-3">
+            <div>
+              <Label>Usuario</Label>
+              <Input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />
+            </div>
+            <div>
+              <Label>Contraseña</Label>
+              <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+            </div>
+            {authError && <div className="text-sm text-red-500">{authError}</div>}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setLoginOpen(false)}>Cancelar</Button>
+              <Button type="submit" disabled={authLoading}>{authLoading ? "Ingresando..." : "Entrar"}</Button>
+            </div>
           </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* Diálogo de resultados múltiples — aparece por encima del mapa */}
-      <Dialog open={resultsOpen} onOpenChange={setResultsOpen}>
-        <DialogContent className="sm:max-w-lg z-[3001]">
-          <DialogHeader>
-            <DialogTitle>Selecciona tu destino</DialogTitle>
-            <DialogDescription>Encontré varias coincidencias para tu búsqueda.</DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-2 max-h-80 overflow-y-auto">
-            {resultHits.map((hit, idx) => (
-              <button
-                key={idx}
-                onClick={() => resolveHit(hit)}
-                className="w-full text-left border rounded-md p-2 hover:bg-accent hover:text-accent-foreground transition"
-              >
-                <div className="flex items-center justify-between">
-                  <div className="font-medium text-sm">
-                    {hit.label}
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    {typeof hit.distanceMeters === "number" && (
-                      <span className="text-xs text-muted-foreground">{hit.distanceMeters} m</span>
-                    )}
-                    <Badge variant={hit.kind === "room" ? "default" : "outline"}>
-                      {hit.kind === "room" ? "Sala" : hit.kind === "building" ? "Bloque" : "Referencia"}
-                    </Badge>
-                  </div>
-                </div>
-                {"sub" in hit && (hit as any).sub && (
-                  <div className="text-xs text-muted-foreground mt-1 line-clamp-2">
-                    {(hit as any).sub}
-                  </div>
-                )}
-              </button>
-            ))}
-          </div>
         </DialogContent>
       </Dialog>
     </div>
