@@ -1855,13 +1855,31 @@ export default function AdminNavigator() {
   const TURN_PENALTY_90M = 0;
   function edgeCostWithTurn(
     G: Map<NodeId, Node>,
-    _prev: NodeId | null,
+    prev: NodeId | null,
     from: NodeId,
     to: NodeId
   ) {
-    const A = G.get(from)!, B = G.get(to)!;
-    return L.latLng(A.lat, A.lng).distanceTo([B.lat, B.lng]);
+    const A = G.get(from)!;
+    const B = G.get(to)!;
+    const base = L.latLng(A.lat, A.lng).distanceTo([B.lat, B.lng]);
+    if (!prev) return base;
+
+    const P = G.get(prev)!;
+    const theta = angleBetween(
+      L.latLng(P.lat, P.lng),
+      L.latLng(A.lat, A.lng),
+      L.latLng(B.lat, B.lng)
+    );
+
+    // penalización lineal con el ángulo, pero con CAP:
+    const rawPenalty = (TURN_PENALTY_90M / (Math.PI / 2)) * theta;
+
+    //  ➜ nunca más del 12–15% del tramo que vas a recorrer
+    const cappedPenalty = Math.min(rawPenalty, base * 0.12);
+
+    return base + cappedPenalty;
   }
+
   function angleBetween(a: L.LatLng, b: L.LatLng, c: L.LatLng) {
     const v1x = b.lng - a.lng, v1y = b.lat - a.lat;
     const v2x = c.lng - b.lng, v2y = c.lat - b.lat;

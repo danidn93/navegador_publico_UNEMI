@@ -32,6 +32,7 @@ export default defineConfig({
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,webp}'],
         globIgnores: ['**/mascota-unemi.png'],
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024, // hasta 5 MB
         runtimeCaching: [
           {
             urlPattern: ({ url }: { url: URL }) => url.origin.includes('tile.openstreetmap.org'),
@@ -54,5 +55,8 @@ export default defineConfig({
         ]
       }
     })
-  ]
+  ],
+  build: {
+    chunkSizeWarningLimit: 1000 // opcional: evita warning por chunks grandes
+  }
 })
