@@ -331,7 +331,11 @@ export type Database = {
     };
 
     Functions: {
-      [_ in never]: never;
+      // 👇 agrega esto
+      get_app_role: {
+        Args: Record<string, never>; // no recibe argumentos
+        Returns: string;            // devuelve 'admin' | 'student' | 'public' (texto)
+      };
     };
 
     Enums: {

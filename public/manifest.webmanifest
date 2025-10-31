@@ -1,13 +1,18 @@
 {
-  "name": "UNEMI Navigator",
-  "short_name": "Navigator",
-  "start_url": "/",
+  "name": "UNEMI Campus",
+  "short_name": "UNEMI",
+  "id": "/",
+  "start_url": "/?source=pwa",
+  "scope": "/",
   "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
   "background_color": "#0a2540",
   "theme_color": "#0a2540",
   "icons": [
     { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
     { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
-    { "src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
-  ]
+    { "src": "/icons/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "prefer_related_applications": false,
+  "gcm_sender_id": "103953800507"
 }

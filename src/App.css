@@ -72,3 +72,24 @@
 .p2p-pin { /* marcador A/B */
   filter: drop-shadow(0 6px 10px rgba(0,0,0,.25));
 }
+/* Oculta/estiliza scroll en móvil */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* Clamp de líneas (por si no tienes el plugin de tailwind) */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Asegura que el drawer respete notches y barras iOS/Android */
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
