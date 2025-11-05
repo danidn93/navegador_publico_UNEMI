@@ -1,10 +1,9 @@
-// public/sw.js
 const CACHE = 'unemi-campus-v1';
 const APP_SHELL = [
   '/', '/index.html',
   '/manifest.webmanifest',
   '/favicon.svg',
-  '/src/main.tsx', // Vite reescribe rutas, no pasa nada si falla
+  '/src/main.tsx',
 ];
 
 self.addEventListener('install', (e) => {
@@ -23,16 +22,12 @@ self.addEventListener('activate', (e) => {
   })());
 });
 
-// Estrategia: Network-first para HTML; Cache-first para estáticos.
-// (No cacheamos agresivo los tiles de OSM para evitar sanciones.)
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   const url = new URL(req.url);
 
-  // Evita interceptar no-GET
   if (req.method !== 'GET') return;
 
-  // HTML → network-first
   if (req.headers.get('accept')?.includes('text/html')) {
     e.respondWith((async () => {
       try {
@@ -48,7 +43,6 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // Estáticos → cache-first
   if (url.origin === self.location.origin) {
     e.respondWith((async () => {
       const cached = await caches.match(req);
@@ -65,7 +59,6 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // Externos (ej. OSM) → network-first con fallback
   e.respondWith((async () => {
     try {
       return await fetch(req);
@@ -74,4 +67,57 @@ self.addEventListener('fetch', (e) => {
       return cached || new Response('', { status: 504 });
     }
   })());
+});
+
+// =================================================================
+// --- 🔔 NUEVO: LISTENER PARA RECIBIR NOTIFICACIONES PUSH ---
+// =================================================================
+// Esto se dispara cuando una notificación push llega del servidor
+self.addEventListener('push', (e) => {
+  // El servidor envía los datos como un JSON
+  const data = e.data.json();
+
+  const title = data.title || 'UNEMI Campus';
+  const options = {
+    body: data.body, // El texto del mensaje
+    icon: data.icon || '/icons/icon-192.png', // Ícono de la notificación
+    badge: '/icons/badge-72.png', // Ícono pequeño (para Android)
+    data: {
+      url: data.url || '/', // A dónde ir al hacer clic
+    },
+  };
+
+  // Muestra la notificación
+  e.waitUntil(
+    self.registration.showNotification(title, options)
+  );
+});
+
+// =================================================================
+// --- 🖱️ NUEVO: LISTENER PARA CLICS EN LA NOTIFICACIÓN ---
+// =================================================================
+// Esto se dispara cuando el usuario HACE CLIC en la notificación
+self.addEventListener('notificationclick', (e) => {
+  // Cierra la notificación
+  e.notification.close();
+
+  // URL a la que debemos navegar
+  const urlToOpen = e.notification.data.url;
+
+  // Revisa si la app ya está abierta en una pestaña
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+      .then((clientList) => {
+        // Si hay una pestaña abierta, la enfoca
+        for (const client of clientList) {
+          if (client.url === urlToOpen && 'focus' in client) {
+            return client.focus();
+          }
+        }
+        // Si no hay pestañas abiertas (o no coincide), abre una nueva
+        if (self.clients.openWindow) {
+          return self.clients.openWindow(urlToOpen);
+        }
+      })
+  );
 });
