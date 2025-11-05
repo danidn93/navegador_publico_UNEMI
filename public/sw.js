@@ -85,6 +85,8 @@ self.addEventListener('push', (e) => {
     data: {
       url: data.url || '/', // A dónde ir al hacer clic
     },
+    sound: '/notification.mp3',
+    vibrate : [200, 100, 200]
   };
 
   // Muestra la notificación

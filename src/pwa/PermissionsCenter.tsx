@@ -9,6 +9,22 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
+import { useAuth } from "@/contexts/AuthContext"; 
+import { supabase } from "@/integrations/supabase/client"; 
+import { toast } from "sonner"; 
+
+const VAPID_PUBLIC_KEY="BGDC3SN4UrXYkmSpjcc0solx7T97gTYdqd4c13yMqz3hdZxWvhkX18ubZOb5RSmeIiJTzbMejViW5VmqpV7CVD4";
+
+function urlBase64ToUint8Array(base64String: string) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
 
 type Props = {
   open: boolean;
@@ -22,6 +38,8 @@ export default function PermissionsCenter({ open, onOpenChange, onRestartWatch }
   const [notifStatus, setNotifStatus] =
     useState<NotificationPermission | "unsupported">("default");
   const audioCtxRef = useRef<AudioContext | null>(null);
+
+  const { user } = useAuth();
 
   useEffect(() => {
     (async () => {
@@ -59,26 +77,66 @@ export default function PermissionsCenter({ open, onOpenChange, onRestartWatch }
   };
 
   const requestNotifications = async () => {
-    if (!("Notification" in window)) {
+    if (!("Notification" in window) || !("serviceWorker" in navigator)) {
       setNotifStatus("unsupported");
+      toast.error("Las notificaciones Push no son compatibles con este navegador.");
       return;
     }
+
     try {
+      // 1. Pedir permiso (Tu código)
       const perm = await Notification.requestPermission();
       setNotifStatus(perm);
-      if (perm === "granted" && "serviceWorker" in navigator) {
-        const reg = await navigator.serviceWorker.getRegistration();
-        if (reg?.showNotification) {
-          reg.showNotification("Notificaciones activadas", {
-            body: "Recibirás avisos con sonido.",
-            icon: "/icons/icon-192.png",
-            badge: "/icons/icon-192.png",
-          });
-        } else {
-          new Notification("Notificaciones activadas", { body: "Listo." });
+
+      if (perm === "granted") {
+        console.log("Permiso de notificación concedido. Suscribiendo...");
+        
+        // 2. Obtener el registro del Service Worker
+        const reg = await navigator.serviceWorker.ready;
+
+        // 3. ¡NUEVO! Suscribir al Push Manager
+        const subscription = await reg.pushManager.subscribe({
+          userVisibleOnly: true, // Requerido
+          applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+        });
+
+        console.log("Suscripción Push obtenida:", subscription);
+
+        // 4. ¡NUEVO! Guardar la suscripción en Supabase
+        if (!user?.id) {
+          toast.error("No se pudo identificar al usuario. Inicia sesión de nuevo.");
+          return;
         }
+
+        // Asumo que tu tabla de usuarios (ej. 'app_users' o 'profiles')
+        // tiene una columna llamada 'push_subscription' de tipo JSONB.
+        const { error } = await supabase
+          .from("app_users") // <-- CAMBIA ESTO por tu tabla de usuarios
+          .update({ push_subscription: subscription })
+          .eq("id", user.id); // <-- Asegúrate que 'user.id' sea el ID de la tabla
+
+        if (error) {
+          console.error("Error al guardar la suscripción:", error);
+          toast.error("Error al guardar la suscripción en la base de datos.");
+          return; // No continuar si falla
+        }
+
+        // 5. Notificación de prueba (Tu código)
+        toast.success("¡Notificaciones Push activadas!");
+        reg.showNotification("Notificaciones activadas", {
+          body: "Recibirás avisos en este dispositivo.",
+          icon: "/icons/icon-192.png",
+          badge: "/icons/icon-192.png",
+        });
+
+      } else {
+        // El usuario denegó el permiso
+        toast.warning("Permiso de notificaciones denegado.");
       }
-    } catch {}
+    } catch (err) {
+      console.error("Error al suscribir a notificaciones Push:", err);
+      toast.error("No se pudieron activar las notificaciones.");
+    }
   };
 
   const playTestSound = async () => {

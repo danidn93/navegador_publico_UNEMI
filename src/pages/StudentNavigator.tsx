@@ -6,7 +6,6 @@ import "leaflet/dist/leaflet.css";
 import "leaflet-routing-machine/dist/leaflet-routing-machine.css";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -323,54 +322,6 @@ const dtype = (t?: string | null) => {
 };
 const fmtBool = (v: any) => (v ? "activo" : "inactivo");
 
-const VAPID_PUBLIC_KEY="BGDC3SN4UrXYkmSpjcc0solx7T97gTYdqd4c13yMqz3hdZxWvhkX18ubZOb5RSmeIiJTzbMejViW5VmqpV7CVD4";
-
-function urlBase64ToUint8Array(base64String) {
-  const padding = '='.repeat((4 - base64String.length % 4) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-  const rawData = window.atob(base64);
-  const outputArray = new Uint8Array(rawData.length);
-  for (let i = 0; i < rawData.length; ++i) {
-    outputArray[i] = rawData.charCodeAt(i);
-  }
-  return outputArray;
-}
-
-// Función principal para suscribir al usuario
-async function subscribeUserToPush() {
-  try {
-    const registration = await navigator.serviceWorker.ready;
-    
-    // Pedir permiso
-    const permission = await Notification.requestPermission();
-    if (permission !== 'granted') {
-      throw new Error('Permiso de notificaciones denegado.');
-    }
-
-    // Suscribir al usuario
-    const subscription = await registration.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
-    });
-
-    console.log('Suscripción Push obtenida:', subscription);
-
-    // ¡CLAVE! Guarda esta suscripción (el JSON) en tu base de datos
-    // Asociada al usuario actual (ej. en la tabla 'app_users')
-    const { user } = useAuth(); // (Obtén el usuario)
-     await supabase
-       .from('app_users')
-       .update({ push_subscription: subscription }) // Asume que tienes una columna 'push_subscription' de tipo JSONB
-       .eq('id', user.id); 
-
-    toast.success('¡Notificaciones Push activadas!');
-
-  } catch (error) {
-    console.error('Error al suscribir a Push:', error);
-    toast.error('No se pudieron activar las notificaciones Push.');
-  }
-}
-
 const getViewerRole = async (): Promise<ViewerRole> => {
   try {
     const { data } = await supabase.auth.getUser();
@@ -660,39 +611,6 @@ export default function StudentNavigator() {
 
   // audio notificación
   const audioRef = useRef<HTMLAudioElement | null>(null);
-
-  const subscribeUserToPush = async () => {
-    try {
-      const registration = await navigator.serviceWorker.ready;
-      
-      const permission = await Notification.requestPermission();
-      if (permission !== 'granted') {
-        throw new Error('Permiso de notificaciones denegado.');
-      }
-
-      const subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
-      });
-
-      console.log('Suscripción Push obtenida:', subscription);
-
-      // --- GUARDA LA SUSCRIPCIÓN EN SUPABASE ---
-      // (Asume que tu tabla 'app_users' tiene una columna 'push_subscription' de tipo JSONB)
-      const { error }_ = await supabase
-        .from('app_users') // O la tabla donde guardas tus usuarios
-        .update({ push_subscription: subscription })
-        .eq('id', user.id); // Asocia la suscripción al usuario logueado
-
-      if (error) throw error;
-      
-      toast.success('¡Notificaciones Push activadas!');
-
-    } catch (error) {
-      console.error('Error al suscribir a Push:', error);
-      toast.error('No se pudieron activar las notificaciones.');
-    }
-  };
 
   /* ===== Refresco/Realtime de notificaciones ===== */
   const refreshNotifications = useCallback(async () => {
