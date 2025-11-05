@@ -454,7 +454,7 @@ export default function PublicNavigator() {
       orParts.push(`keywords.ov.${kwArray}`);
       orParts.push(`actividades.ov.${kwArray}`);
     }
-    const allowed = ["public", "student", "admin"].slice(
+    const allowed = ["public"].slice(
       0,
       1 +
         (appUser?.role === "student" ? 1 : 0) +

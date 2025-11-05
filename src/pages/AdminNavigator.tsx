@@ -834,6 +834,17 @@ export default function AdminNavigator() {
     };
   }, []);
 
+  const handleOpenPasswordModal = () => {
+    // 1. Primero, cierra el panel de usuario
+    setPanelOpen(false);
+
+    // 2. Un instante después, abre el modal de contraseña
+    //    (para dar tiempo a que la animación de cierre del panel comience)
+    setTimeout(() => {
+      setChangePwOpen(true);
+    }, 200); // 200 milisegundos suele ser suficiente
+  };
+  
   useEffect(() => {
     (async () => {
       const { data, error } = await (supabase as any)
@@ -2631,7 +2642,7 @@ export default function AdminNavigator() {
               <div className="flex gap-2">
                 <Button
                   variant="outline"
-                  onClick={() => setChangePwOpen(true)} // <-- Abre el modal
+                  onClick={handleOpenPasswordModal} // <-- Abre el modal
                 >
                   <KeyRound className="mr-2 h-4 w-4" />
                   Cambiar Contraseña
@@ -2640,9 +2651,7 @@ export default function AdminNavigator() {
                   <LogOut className="w-4 h-4 mr-2" /> Salir
                 </Button>
               </div>
-              <p className="text-xs text-slate-500">
-                “Cambiar contraseña” enviará un correo de restablecimiento a tu cuenta.
-              </p>
+              
             </div>
 
             <div className="grid gap-2">
@@ -2653,7 +2662,7 @@ export default function AdminNavigator() {
                 <Badge variant="secondary">Entradas</Badge>
                 <Badge variant="secondary">Parqueaderos</Badge>
               </div>
-              <p className="text-xs text-slate-500">Modo administrador: visualización sin edición.</p>
+             
             </div>
           </div>
         </div>

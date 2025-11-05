@@ -95,6 +95,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Creamos un nuevo canal único para este usuario/rol
     const channel = supabase.channel(`notifications_for_${role}_${user.id}`);
 
+    let realtimeFilter: string;
+
+    if (role === 'admin') {
+      // El Admin escucha notificaciones para admin, student, Y public
+      realtimeFilter = 'role_target=in.("admin","student","public")';
+    } else if (role === 'student') {
+      // El Estudiante escucha notificaciones para student Y public
+      realtimeFilter = 'role_target=in.("student","public")';
+    } else {
+      // Si por alguna razón es otro rol, solo escucha public
+      realtimeFilter = 'role_target=eq.public';
+    }
+
     channel
       .on(
         'postgres_changes',
@@ -104,7 +117,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           table: 'notifications',
           // Filtramos para que solo nos lleguen notificaciones
           // que coincidan con el ROL del usuario logueado.
-          filter: `role_target=eq.${role}`,
+          filter: realtimeFilter,
         },
         (payload) => {
           console.log('Nueva notificación recibida:', payload);
