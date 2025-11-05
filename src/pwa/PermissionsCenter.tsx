@@ -39,7 +39,7 @@ export default function PermissionsCenter({ open, onOpenChange, onRestartWatch }
     useState<NotificationPermission | "unsupported">("default");
   const audioCtxRef = useRef<AudioContext | null>(null);
 
-  const { user } = useAuth();
+  const { appUserId } = useAuth();
 
   useEffect(() => {
     (async () => {
@@ -103,7 +103,7 @@ export default function PermissionsCenter({ open, onOpenChange, onRestartWatch }
         console.log("Suscripción Push obtenida:", subscription);
 
         // 4. ¡NUEVO! Guardar la suscripción en Supabase
-        if (!user?.id) {
+        if (!appUserId) {
           toast.error("No se pudo identificar al usuario. Inicia sesión de nuevo.");
           return;
         }
@@ -113,7 +113,7 @@ export default function PermissionsCenter({ open, onOpenChange, onRestartWatch }
         const { error } = await supabase
           .from("app_users") // <-- CAMBIA ESTO por tu tabla de usuarios
           .update({ push_subscription: subscription })
-          .eq("id", user.id); // <-- Asegúrate que 'user.id' sea el ID de la tabla
+          .eq("id", appUserId); // <-- Asegúrate que 'user.id' sea el ID de la tabla
 
         if (error) {
           console.error("Error al guardar la suscripción:", error);

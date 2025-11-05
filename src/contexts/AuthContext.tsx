@@ -10,6 +10,7 @@ export type AppRole = "public" | "student" | "admin";
 
 type Ctx = {
   user: { id: string; email: string } | null;
+  appUserId: number | null;
   role: AppRole;
   loading: boolean;
   refreshRole: () => Promise<void>;
@@ -18,6 +19,7 @@ type Ctx = {
 
 const AuthContext = createContext<Ctx>({
   user: null,
+  appUserId: null,
   role: "public",
   loading: true,
   refreshRole: async () => {},
@@ -28,6 +30,7 @@ export const useAuth = () => useContext(AuthContext);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<Ctx["user"]>(null);
+  const [appUserId, setAppUserId] = useState<number | null>(null);
   const [role, setRole] = useState<AppRole>("public");
   const [loading, setLoading] = useState(true);
   const channelRef = useRef<RealtimeChannel | null>(null);
@@ -48,12 +51,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } else {
           setRole((data as AppRole) ?? "public");
         }
+        const { data: appUserData, error: appUserError } = await supabase
+          .from("app_users") // Tu tabla de usuarios
+          .select("id")     // El 'id' numérico (bigint)
+          .eq("email", u.email) // Busca por el email
+          .single();
+        
+        if (appUserError) {
+          console.error("Error fetching app_user id:", appUserError);
+          setAppUserId(null);
+        } else {
+          setAppUserId(appUserData.id); // ¡Guarda el ID numérico!
+        }
       } else {
         setRole("public");
+        setAppUserId(null);
       }
     } catch (e) {
       console.error(e);
       setRole("public");
+      setAppUserId(null);
     } finally {
       setLoading(false);
     }
@@ -173,12 +190,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
     setUser(null);
+    setAppUserId(null);
     setRole("public");
     toast.message("Sesión cerrada");
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, role, loading, refreshRole, signOut }}>
+    <AuthContext.Provider value={{ user, appUserId, role, loading, refreshRole, signOut }}>
       {children}
     </AuthContext.Provider>
   );
