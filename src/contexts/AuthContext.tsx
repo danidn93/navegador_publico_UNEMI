@@ -9,7 +9,7 @@ import type { RealtimeChannel } from "@supabase/supabase-js";
 export type AppRole = "public" | "student" | "admin";
 
 type Ctx = {
-  user: { id: string; email: string } | null;
+  user: { id: string; usuario: string } | null;
   appUserId: number | null;
   role: AppRole;
   loading: boolean;
@@ -40,7 +40,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const u = session?.user ?? null;
-      setUser(u ? { id: u.id, email: u.email ?? "" } : null);
+      setUser(u ? { id: u.id, usuario: u.email ?? "" } : null);
 
       if (u?.email) {
         console.log("[Auth] RPC get_app_role →");
@@ -54,7 +54,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const { data: appUserData, error: appUserError } = await supabase
           .from("app_users") // Tu tabla de usuarios
           .select("id")     // El 'id' numérico (bigint)
-          .eq("email", u.email) // Busca por el email
+          .eq("usuario", u.email) // Busca por el email
           .single();
         
         if (appUserError) {

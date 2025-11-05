@@ -39,7 +39,7 @@ export default function PermissionsCenter({ open, onOpenChange, onRestartWatch }
     useState<NotificationPermission | "unsupported">("default");
   const audioCtxRef = useRef<AudioContext | null>(null);
 
-  const { appUserId } = useAuth();
+  const { appUserId, loading: authLoading } = useAuth();
 
   useEffect(() => {
     (async () => {
@@ -194,7 +194,7 @@ export default function PermissionsCenter({ open, onOpenChange, onRestartWatch }
               </div>
               <div className="flex gap-2">
                 <Button size="sm" variant="outline" onClick={playTestSound}>Probar sonido</Button>
-                <Button size="sm" onClick={requestNotifications}>Permitir</Button>
+                <Button size="sm" onClick={requestNotifications} disabled={authLoading}>Permitir</Button>
               </div>
             </div>
           </section>
