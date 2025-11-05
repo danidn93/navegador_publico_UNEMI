@@ -29,17 +29,35 @@ export default function ResetTempPassword() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    // 1. Setea el email desde la URL (esto está bien)
     const e = q.get("email") || "";
     if (e) setEmail(e);
 
-    (async () => {
-      const { data } = await supabase.auth.getUser();
+    // 2. Comprueba si YA hay una sesión (por si acaso)
+    supabase.auth.getUser().then(({ data }) => {
       if (data?.user) {
         setHasSession(true);
         setEmail(data.user.email || e);
       }
-    })();
-  }, [q]);
+    });
+
+    // 3. ¡LA CLAVE! Escucha el evento de inicio de sesión
+    //    Esto se dispara cuando Supabase procesa el token de la URL.
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      (event, session) => {
+        // Cuando el evento 'SIGNED_IN' ocurre...
+        if (event === "SIGNED_IN") {
+          setHasSession(true); // <-- ¡Ahora sí!
+          setEmail(session?.user?.email || e);
+        }
+      }
+    );
+
+    // 4. Limpia el listener cuando el componente se desmonte
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
+  }, [q]); // La dependencia de 'q' está bien para setear el email
 
   const validNew = useMemo(() => newPw.length >= 8 && newPw === newPw2, [newPw, newPw2]);
   const canSubmit = validNew && !loading && email.trim() && hasSession;
