@@ -1,3 +1,5 @@
 {
-  "imports": {}
+  "imports": {
+    "web-push": "https://esm.sh/web-push@0.1.3"
+  }
 }

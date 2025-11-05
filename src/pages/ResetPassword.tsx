@@ -152,7 +152,7 @@ export default function ResetPassword() {
                       <div className="text-sm text-white/80">
                         {ready ? "El enlace es inválido o expiró." : "Validando enlace…"}
                       </div>
-                      <Button asChild variant="outline" className="text-white border-white/30">
+                      <Button asChild variant="outline" className="text-black border-white/30">
                         <Link className="text-black" to="/login"><Home className="text-black w-4 h-4 mr-2" /> Login</Link>
                       </Button>
                     </div>
