@@ -2471,7 +2471,7 @@ export default function AdminNavigator() {
             </button>
 
             <div>
-              <h1 className="font-semibold text-base leading-tight">UNEMI Campus · Admin</h1>
+              <h1 className="font-semibold text-base leading-tight">UNEMI Campus · Admin V 2.0</h1>
               <p className="text-[11px] opacity-80">Universidad Estatal de Milagro</p>
             </div>
           </div>

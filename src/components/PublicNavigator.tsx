@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/dialog";
 import { Search, PanelTopOpen, X, MapPin, LogIn, LogOut, UserCircle2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
 
 /* --- Leaflet icon fix --- */
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -215,6 +216,26 @@ const resolvePublicImageUrl = async (raw: string | null | undefined): Promise<st
 /* ---------------- COMPONENT ---------------- */
 export default function PublicNavigator() {
   const navigate = useNavigate();
+  const { role, loading } = useAuth();
+
+  useEffect(() => {
+    // 1. Si está cargando la sesión, no hagas nada todavía.
+    // (Tu AuthProvider está en proceso de 'loadSessionAndRole')
+    if (loading) {
+      return;
+    }
+
+    // 2. Si ya terminó de cargar (loading es false) y SÍ hay un rol...
+    if (role === "admin") {
+      navigate("/admin", { replace: true });
+    } else if (role === "student") {
+      navigate("/student", { replace: true });
+    }
+
+    // 3. Si no está 'loading' y el 'role' es 'public',
+    // no hace nada, permitiendo que se vea el PublicNavigator.
+
+  }, [role, loading, navigate]); // Se ejecuta cuando 'role' o 'loading' cambian
 
   /* --- estados básicos --- */
   const [query, setQuery] = useState("");
@@ -1465,7 +1486,7 @@ export default function PublicNavigator() {
         <div className="max-w-6xl mx-auto px-3 md:px-4 h-12 flex items-center justify-between gap-2">
           <div className="flex items-center gap-3 min-w-0">
             <div className="font-semibold text-sm sm:text-base leading-none">
-              UNEMI Campus
+              UNEMI Campus V 2.0
             </div>
             {userLoc ? (
               <Badge variant="secondary" className="hidden sm:inline-flex">
