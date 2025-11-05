@@ -552,6 +552,10 @@ export default function AdminNavigator() {
   const [parkings, setParkings] = useState<any[]>([]);
   const [landmarks, setLandmarks] = useState<any[]>([]);
 
+  const [changePwOpen, setChangePwOpen] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [loadingPw, setLoadingPw] = useState(false);
+
   // notificaciones
   const [notifs, setNotifs] = useState<NotificationRow[]>([]);
   const [enrichedNotifs, setEnrichedNotifs] = useState<EnrichedNotification[]>([]);
@@ -2415,24 +2419,32 @@ export default function AdminNavigator() {
     }
   };
 
-  const handlePasswordReset = async (): Promise<void> => {
+  // --- FUNCIÓN CORRECTA PARA CAMBIAR CONTRASEÑA (LOGUEADO) ---
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (!newPassword || newPassword.length < 8) {
+      toast.error("La contraseña debe tener al menos 8 caracteres.");
+      return;
+    }
+
+    setLoadingPw(true);
     try {
-      const { data, error } = await supabase.auth.getUser();
+      // ESTA ES LA FUNCIÓN CORRECTA
+      const { error } = await supabase.auth.updateUser({
+        password: newPassword, // La nueva contraseña del <Input>
+      });
+      // NO USA resetPasswordForEmail()
+
       if (error) throw error;
 
-      const email = data?.user?.email;
-      if (!email) {
-        toast.error("No se pudo obtener el correo de la sesión.");
-        return;
-      }
-
-      await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/login`,
-      });
-
-      toast.success("Te enviamos un correo para restablecer tu contraseña.");
-    } catch (e: any) {
-      toast.error(e?.message ?? "No se pudo enviar el correo de restablecimiento");
+      toast.success("Contraseña actualizada con éxito.");
+      setNewPassword(""); // Limpia el campo
+      setChangePwOpen(false); // Cierra el modal
+    } catch (err: any) {
+      toast.error(err.message || "No se pudo actualizar la contraseña.");
+    } finally {
+      setLoadingPw(false);
     }
   };
 
@@ -2617,8 +2629,12 @@ export default function AdminNavigator() {
             <div className="grid gap-2">
               <Label className="text-xs">Acciones de cuenta</Label>
               <div className="flex gap-2">
-                <Button size="sm" variant="outline" onClick={handlePasswordReset}>
-                  <KeyRound className="w-4 h-4 mr-2" /> Cambiar contraseña
+                <Button
+                  variant="outline"
+                  onClick={() => setChangePwOpen(true)} // <-- Abre el modal
+                >
+                  <KeyRound className="mr-2 h-4 w-4" />
+                  Cambiar Contraseña
                 </Button>
                 <Button size="sm" variant="destructive" onClick={handleLogout}>
                   <LogOut className="w-4 h-4 mr-2" /> Salir
@@ -2941,6 +2957,50 @@ export default function AdminNavigator() {
           </Button>
         </div>
       )}
+
+      {/* === MODAL PARA CAMBIAR CONTRASEÑA === */}
+      <Dialog open={changePwOpen} onOpenChange={setChangePwOpen}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>Cambiar contraseña</DialogTitle>
+            <DialogDescription>
+              Ingresa tu nueva contraseña. Debe tener al menos 8 caracteres.
+            </DialogDescription>
+          </DialogHeader>
+          {/* El formulario llama a la función CORRECTA */}
+          <form onSubmit={handleChangePassword}>
+            <div className="grid gap-4 py-4">
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="new-password" className="text-right">
+                  Nueva Contraseña
+                </Label>
+                <Input
+                  id="new-password"
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="col-span-3"
+                  required
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setChangePwOpen(false)}
+                disabled={loadingPw}
+              >
+                Cancelar
+              </Button>
+              <Button type="submit" disabled={loadingPw}>
+                {loadingPw ? "Guardando..." : "Guardar cambios"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       {/* ===== Resultados de búsqueda ===== */}
       <Dialog open={resultsOpen} onOpenChange={setResultsOpen}>
